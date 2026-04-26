@@ -1,0 +1,10 @@
+/.bundle/
+/coverage/
+/pkg/
+/tmp/
+
+.rspec_status*
+.env
+.claude
+AGENTS.md
+CLAUDE.md
