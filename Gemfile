@@ -2,11 +2,13 @@
 
 source 'https://rubygems.org'
 
-if ENV['LEX_LLM_PATH'] && File.directory?(ENV.fetch('LEX_LLM_PATH'))
-  gem 'lex-llm', path: ENV.fetch('LEX_LLM_PATH')
-else
-  gem 'lex-llm', git: 'https://github.com/LegionIO/lex-llm',
-                 branch: ENV.fetch('LEX_LLM_BRANCH', 'lex-llm-routing-base-20260425')
+group :test do
+  if ENV['LEX_LLM_PATH'] && File.directory?(ENV.fetch('LEX_LLM_PATH'))
+    gem 'lex-llm', path: ENV.fetch('LEX_LLM_PATH')
+  else
+    gem 'lex-llm', git: 'https://github.com/LegionIO/lex-llm',
+                   branch: ENV.fetch('LEX_LLM_BRANCH', 'main')
+  end
 end
 
 gemspec

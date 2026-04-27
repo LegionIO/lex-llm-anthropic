@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/llm'
-require 'legion/extensions/llm/anthropic/provider_settings'
+require 'legion/extensions/llm/anthropic/provider'
 require 'legion/extensions/llm/anthropic/version'
 
 module Legion
@@ -14,7 +14,7 @@ module Legion
         PROVIDER_FAMILY = :anthropic
 
         def self.default_settings
-          ProviderSettings.build(
+          ::Legion::Extensions::Llm.provider_settings(
             family: PROVIDER_FAMILY,
             instance: {
               endpoint: 'https://api.anthropic.com',
@@ -26,7 +26,14 @@ module Legion
             }
           )
         end
+
+        def self.provider_class
+          Provider
+        end
       end
     end
   end
 end
+
+LexLLM::Provider.register(Legion::Extensions::Llm::Anthropic::PROVIDER_FAMILY,
+                          Legion::Extensions::Llm::Anthropic::Provider)

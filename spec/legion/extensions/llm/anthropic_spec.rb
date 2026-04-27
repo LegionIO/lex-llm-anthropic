@@ -3,6 +3,18 @@
 require 'spec_helper'
 
 RSpec.describe Legion::Extensions::Llm::Anthropic do
+  let(:provider) { described_class::Provider.new(LexLLM.config) }
+  let(:claude_model) do
+    LexLLM::Model::Info.new(id: 'claude-sonnet-4-5-20250929', provider: :anthropic, max_output_tokens: 8192)
+  end
+
+  before do
+    LexLLM.configure do |config|
+      config.anthropic_api_key = 'test-anthropic-key'
+      config.anthropic_version = '2023-06-01'
+    end
+  end
+
   it 'exposes provider defaults with inherited fleet settings' do
     settings = described_class.default_settings
 
@@ -10,5 +22,149 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     expect(settings[:fleet]).to include(:enabled)
     expect(settings.dig(:instances, :default, :endpoint)).to eq('https://api.anthropic.com')
     expect(settings.dig(:instances, :default, :usage, :embedding)).to be false
+  end
+
+  it 'registers the LexLLM provider class' do
+    expect(LexLLM::Provider.resolve(:anthropic)).to eq(described_class::Provider)
+  end
+
+  it 'exposes Anthropic endpoint helpers and headers' do
+    expect([provider.api_base, provider.completion_url, provider.models_url])
+      .to eq(['https://api.anthropic.com', '/v1/messages', '/v1/models'])
+    expect(provider.headers).to eq('x-api-key' => 'test-anthropic-key', 'anthropic-version' => '2023-06-01')
+  end
+
+  it 'advertises chat capabilities without embeddings' do
+    capabilities = described_class::Provider.capabilities
+
+    expect(capabilities.chat?(claude_model)).to be true
+    expect(capabilities.streaming?(claude_model)).to be true
+    expect(capabilities.functions?(claude_model)).to be true
+    expect(capabilities.embeddings?(claude_model)).to be false
+  end
+
+  it 'renders chat payloads in the Anthropic Messages API shape' do
+    payload = chat_payload
+
+    expect_chat_envelope(payload)
+    expect_chat_content(payload)
+  end
+
+  it 'renders Anthropic tool definitions and tool choices' do
+    payload = chat_payload(tools: {
+                             lookup: tool('lookup', 'look up a value', { type: 'object', properties: {} })
+                           }, tool_prefs: { choice: :lookup, calls: :one })
+
+    expect(payload[:tools]).to eq([lookup_tool_definition])
+    expect(payload[:tool_choice]).to eq(lookup_tool_choice)
+  end
+
+  it 'parses completion responses with text, thinking, tool calls, and usage' do
+    message = provider.send(:parse_completion_response, fake_response(completion_body))
+
+    expect_completion_text_and_thinking(message)
+    expect_completion_tool_call(message)
+    expect_completion_usage(message)
+  end
+
+  it 'parses Anthropic model listing responses' do
+    models = parsed_models
+
+    expect(models.first.to_h).to include(expected_model_listing)
+  end
+
+  def chat_payload(tools: {}, tool_prefs: nil)
+    messages = [
+      LexLLM::Message.new(role: :system, content: 'answer briefly'),
+      LexLLM::Message.new(role: :user, content: 'hello')
+    ]
+    provider.send(:render_payload, messages, tools: tools, temperature: 0.2, model: claude_model, stream: false,
+                                             schema: nil, thinking: LexLLM::Thinking::Config.new(budget: 2048),
+                                             tool_prefs: tool_prefs)
+  end
+
+  def expect_chat_envelope(payload)
+    expect(payload.values_at(:model, :stream, :max_tokens)).to eq(['claude-sonnet-4-5-20250929', false, 8192])
+    expect(payload[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
+    expect(payload[:temperature]).to eq(0.2)
+  end
+
+  def expect_chat_content(payload)
+    expect(payload[:system]).to eq([{ type: 'text', text: 'answer briefly' }])
+    expect(payload[:messages]).to eq([{ role: 'user', content: [{ type: 'text', text: 'hello' }] }])
+  end
+
+  def lookup_tool_definition
+    {
+      name: 'lookup',
+      description: 'look up a value',
+      input_schema: { type: 'object', properties: {} }
+    }
+  end
+
+  def lookup_tool_choice
+    { type: 'tool', name: 'lookup', disable_parallel_tool_use: true }
+  end
+
+  def expect_completion_text_and_thinking(message)
+    expect(message.content).to eq('done')
+    expect(message.thinking.text).to eq('reasoned')
+    expect(message.thinking.signature).to eq('sig-1')
+  end
+
+  def expect_completion_tool_call(message)
+    expect(message.tool_calls.fetch('toolu_1').to_h).to eq(
+      { id: 'toolu_1', name: 'lookup', arguments: { 'id' => 1 } }
+    )
+  end
+
+  def expect_completion_usage(message)
+    expect([message.model_id, message.input_tokens, message.output_tokens]).to eq(
+      ['claude-sonnet-4-5-20250929', 11, 7]
+    )
+  end
+
+  def parsed_models
+    provider.send(:parse_list_models_response, fake_response(models_body), :anthropic, nil)
+  end
+
+  def expected_model_listing
+    {
+      id: 'claude-opus-4-1-20250805',
+      name: 'Claude Opus 4.1',
+      provider: :anthropic
+    }
+  end
+
+  def tool(name, description, params_schema)
+    Struct.new(:name, :description, :params_schema).new(name, description, params_schema)
+  end
+
+  def completion_body
+    {
+      'model' => 'claude-sonnet-4-5-20250929',
+      'content' => [
+        { 'type' => 'thinking', 'thinking' => 'reasoned', 'signature' => 'sig-1' },
+        { 'type' => 'text', 'text' => 'done' },
+        { 'type' => 'tool_use', 'id' => 'toolu_1', 'name' => 'lookup', 'input' => { 'id' => 1 } }
+      ],
+      'usage' => { 'input_tokens' => 11, 'output_tokens' => 7 }
+    }
+  end
+
+  def models_body
+    {
+      'data' => [
+        {
+          'id' => 'claude-opus-4-1-20250805',
+          'display_name' => 'Claude Opus 4.1',
+          'created_at' => '2025-08-05T00:00:00Z'
+        }
+      ]
+    }
+  end
+
+  def fake_response(body)
+    Struct.new(:body).new(body)
   end
 end
