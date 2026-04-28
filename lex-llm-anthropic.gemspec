@@ -23,9 +23,5 @@ Gem::Specification.new do |spec|
   spec.files = `git ls-files -z`.split("\x0").reject { |file| file.match(%r{^(spec|test|features|tmp|coverage)/}) }
   spec.require_paths = ['lib']
 
-  spec.add_dependency 'faraday', '>= 2.0'
-  spec.add_dependency 'legion-json', '>= 1.0'
-  spec.add_dependency 'legion-logging', '>= 1.0'
-  spec.add_dependency 'legion-settings', '>= 1.3.14'
   spec.add_dependency 'lex-llm', '>= 0.1.3'
 end

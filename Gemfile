@@ -3,8 +3,8 @@
 source 'https://rubygems.org'
 
 group :test do
-  lex_llm_path = ENV.fetch('LEX_LLM_PATH', File.expand_path('../lex-llm', __dir__))
-  gem 'lex-llm', path: lex_llm_path if File.directory?(lex_llm_path)
+  llm_base_path = ENV.fetch('LEX_LLM_PATH', File.expand_path('../lex-llm', __dir__))
+  gem 'lex-llm', path: llm_base_path if File.directory?(llm_base_path)
 end
 
 gemspec

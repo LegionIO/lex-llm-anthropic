@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 - 2026-04-28
+
+- Remove the leftover compatibility entrypoint outside the Legion namespace.
+- Load specs through the canonical `legion/extensions/llm/anthropic` namespace path.
+- Keep provider gemspec dependencies scoped to the shared `lex-llm` base gem.
+
 ## 0.1.2 - 2026-04-28
 
 - Replace fork-era namespace references with the standard Legion::Extensions::Llm provider contract.

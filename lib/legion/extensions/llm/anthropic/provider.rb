@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/llm'
-require 'legion/json'
 
 module Legion
   module Extensions
