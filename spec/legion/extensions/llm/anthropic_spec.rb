@@ -8,6 +8,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     Legion::Extensions::Llm::Model::Info.new(id: 'claude-sonnet-4-5-20250929', provider: :anthropic,
                                              max_output_tokens: 8192)
   end
+  let(:registry_publisher) { instance_double(described_class::RegistryPublisher) }
 
   before do
     Legion::Extensions::Llm.configure do |config|
@@ -72,6 +73,23 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     models = parsed_models
 
     expect(models.first.to_h).to include(expected_model_listing)
+  end
+
+  it 'publishes discovered models asynchronously through the registry publisher' do
+    stub_registry_publisher
+    stub_model_discovery
+
+    models = provider.list_models
+
+    expect_registry_publish(models)
+  end
+
+  it 'builds sanitized lex-llm registry events for Anthropic model availability' do
+    events = capture_registry_events([claude_model], readiness: { ready: true })
+
+    expect(events.first.to_h).to include(event_type: :offering_available)
+    expect(events.first.to_h.dig(:offering, :provider_family)).to eq(:anthropic)
+    expect(events.first.to_h.dig(:offering, :model)).to eq('claude-sonnet-4-5-20250929')
   end
 
   def chat_payload(tools: {}, tool_prefs: nil)
@@ -167,5 +185,29 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
   def fake_response(body)
     Struct.new(:body).new(body)
+  end
+
+  def stub_registry_publisher
+    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
+    allow(registry_publisher).to receive(:publish_models_async)
+  end
+
+  def stub_model_discovery
+    allow(provider.connection).to receive(:get).with('/v1/models').and_return(fake_response(models_body))
+  end
+
+  def expect_registry_publish(models)
+    expect(registry_publisher).to have_received(:publish_models_async)
+      .with(models, readiness: hash_including(provider: :anthropic, live: false))
+  end
+
+  def capture_registry_events(models, readiness:)
+    publisher = described_class::RegistryPublisher.new
+    events = []
+    allow(publisher).to receive(:publishing_available?).and_return(true)
+    allow(publisher).to receive(:publish_event) { |event| events << event }
+    allow(Thread).to receive(:new).and_yield
+    publisher.publish_models_async(models, readiness:)
+    events
   end
 end

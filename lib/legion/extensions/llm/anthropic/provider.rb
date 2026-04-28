@@ -9,10 +9,16 @@ module Legion
         # Anthropic Messages API provider implementation for the Legion::Extensions::Llm contract.
         class Provider < Legion::Extensions::Llm::Provider # rubocop:disable Metrics/ClassLength
           class << self
+            attr_writer :registry_publisher
+
             def slug = 'anthropic'
             def configuration_options = %i[anthropic_api_key anthropic_api_base anthropic_version]
             def configuration_requirements = %i[anthropic_api_key]
             def capabilities = Capabilities
+
+            def registry_publisher
+              @registry_publisher ||= RegistryPublisher.new
+            end
           end
 
           # Capability predicates for Anthropic chat model offerings.
@@ -43,6 +49,12 @@ module Legion
 
           def embed(_text, model:, dimensions:)
             raise NotImplementedError, 'Anthropic does not expose embeddings through this provider'
+          end
+
+          def list_models
+            super.tap do |models|
+              self.class.registry_publisher.publish_models_async(models, readiness: readiness(live: false))
+            end
           end
 
           private

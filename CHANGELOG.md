@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5 - 2026-04-28
+
+- Publish best-effort `llm.registry` discovered-model availability events when transport is already loaded.
+
 ## 0.1.4 - 2026-04-28
 
 - Require current shared Legion JSON, logging, settings, and LLM extension gems.
