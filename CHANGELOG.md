@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4 - 2026-04-28
+
+- Require current shared Legion JSON, logging, settings, and LLM extension gems.
+
 ## 0.1.3 - 2026-04-28
 
 - Remove the leftover compatibility entrypoint outside the Legion namespace.
