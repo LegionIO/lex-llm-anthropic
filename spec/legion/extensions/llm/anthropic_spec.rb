@@ -3,13 +3,14 @@
 require 'spec_helper'
 
 RSpec.describe Legion::Extensions::Llm::Anthropic do
-  let(:provider) { described_class::Provider.new(LexLLM.config) }
+  let(:provider) { described_class::Provider.new(Legion::Extensions::Llm.config) }
   let(:claude_model) do
-    LexLLM::Model::Info.new(id: 'claude-sonnet-4-5-20250929', provider: :anthropic, max_output_tokens: 8192)
+    Legion::Extensions::Llm::Model::Info.new(id: 'claude-sonnet-4-5-20250929', provider: :anthropic,
+                                             max_output_tokens: 8192)
   end
 
   before do
-    LexLLM.configure do |config|
+    Legion::Extensions::Llm.configure do |config|
       config.anthropic_api_key = 'test-anthropic-key'
       config.anthropic_version = '2023-06-01'
     end
@@ -24,8 +25,8 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     expect(settings.dig(:instances, :default, :usage, :embedding)).to be false
   end
 
-  it 'registers the LexLLM provider class' do
-    expect(LexLLM::Provider.resolve(:anthropic)).to eq(described_class::Provider)
+  it 'registers the Legion::Extensions::Llm provider class' do
+    expect(Legion::Extensions::Llm::Provider.resolve(:anthropic)).to eq(described_class::Provider)
   end
 
   it 'exposes Anthropic endpoint helpers and headers' do
@@ -75,12 +76,12 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
   def chat_payload(tools: {}, tool_prefs: nil)
     messages = [
-      LexLLM::Message.new(role: :system, content: 'answer briefly'),
-      LexLLM::Message.new(role: :user, content: 'hello')
+      Legion::Extensions::Llm::Message.new(role: :system, content: 'answer briefly'),
+      Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')
     ]
+    thinking = Legion::Extensions::Llm::Thinking::Config.new(budget: 2048)
     provider.send(:render_payload, messages, tools: tools, temperature: 0.2, model: claude_model, stream: false,
-                                             schema: nil, thinking: LexLLM::Thinking::Config.new(budget: 2048),
-                                             tool_prefs: tool_prefs)
+                                             schema: nil, thinking: thinking, tool_prefs: tool_prefs)
   end
 
   def expect_chat_envelope(payload)

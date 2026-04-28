@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
-require 'lex_llm'
+require 'legion/extensions/llm'
 require 'legion/json'
 
 module Legion
   module Extensions
     module Llm
       module Anthropic
-        # Anthropic Messages API provider implementation for the LexLLM contract.
-        class Provider < LexLLM::Provider # rubocop:disable Metrics/ClassLength
+        # Anthropic Messages API provider implementation for the Legion::Extensions::Llm contract.
+        class Provider < Legion::Extensions::Llm::Provider # rubocop:disable Metrics/ClassLength
           class << self
             def slug = 'anthropic'
             def configuration_options = %i[anthropic_api_key anthropic_api_base anthropic_version]
@@ -100,7 +100,7 @@ module Legion
           end
 
           def raw_content(content)
-            return nil unless content.is_a?(LexLLM::Content::Raw)
+            return nil unless content.is_a?(Legion::Extensions::Llm::Content::Raw)
 
             Array(content.format)
           end
@@ -257,7 +257,7 @@ module Legion
             content_blocks = body['content'] || []
             usage = body['usage'] || {}
 
-            LexLLM::Message.new(
+            Legion::Extensions::Llm::Message.new(
               role: :assistant,
               content: text_from(content_blocks),
               model_id: body['model'],
@@ -280,7 +280,7 @@ module Legion
             thinking_block = blocks.find { |block| block['type'] == 'thinking' }
             redacted_block = blocks.find { |block| block['type'] == 'redacted_thinking' }
 
-            LexLLM::Thinking.build(
+            Legion::Extensions::Llm::Thinking.build(
               text: thinking_block&.dig('thinking') || thinking_block&.dig('text'),
               signature: thinking_block&.dig('signature') || redacted_block&.dig('data')
             )
@@ -303,11 +303,11 @@ module Legion
           def build_chunk(data)
             delta_type = data.dig('delta', 'type')
 
-            LexLLM::Chunk.new(
+            Legion::Extensions::Llm::Chunk.new(
               role: :assistant,
               content: delta_type == 'text_delta' ? data.dig('delta', 'text') : nil,
               model_id: data.dig('message', 'model'),
-              thinking: LexLLM::Thinking.build(
+              thinking: Legion::Extensions::Llm::Thinking.build(
                 text: delta_type == 'thinking_delta' ? data.dig('delta', 'thinking') : nil,
                 signature: delta_type == 'signature_delta' ? data.dig('delta', 'signature') : nil
               ),
@@ -324,7 +324,7 @@ module Legion
             blocks.to_h do |block|
               [
                 block['id'],
-                LexLLM::ToolCall.new(
+                Legion::Extensions::Llm::ToolCall.new(
                   id: block['id'],
                   name: block['name'],
                   arguments: block['input'] || {}
@@ -336,7 +336,7 @@ module Legion
           def parse_list_models_response(response, provider, _capabilities)
             Array(response.body['data']).map do |model|
               model_id = model.fetch('id')
-              LexLLM::Model::Info.new(
+              Legion::Extensions::Llm::Model::Info.new(
                 id: model_id,
                 name: model['display_name'] || model_id,
                 provider: provider,

@@ -3,12 +3,8 @@
 source 'https://rubygems.org'
 
 group :test do
-  if ENV['LEX_LLM_PATH'] && File.directory?(ENV.fetch('LEX_LLM_PATH'))
-    gem 'lex-llm', path: ENV.fetch('LEX_LLM_PATH')
-  else
-    gem 'lex-llm', git: 'https://github.com/LegionIO/lex-llm',
-                   branch: ENV.fetch('LEX_LLM_BRANCH', 'main')
-  end
+  lex_llm_path = ENV.fetch('LEX_LLM_PATH', File.expand_path('../lex-llm', __dir__))
+  gem 'lex-llm', path: lex_llm_path if File.directory?(lex_llm_path)
 end
 
 gemspec

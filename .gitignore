@@ -3,6 +3,7 @@
 /pkg/
 /tmp/
 Gemfile.lock
+*.gem
 
 .rspec_status*
 .env

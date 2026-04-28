@@ -6,7 +6,7 @@ This gem lives under `Legion::Extensions::Llm::Anthropic` and depends on `lex-ll
 
 ## Provider
 
-`Legion::Extensions::Llm::Anthropic::Provider` registers with LexLLM as `:anthropic` and uses Anthropic's Messages API:
+`Legion::Extensions::Llm::Anthropic::Provider` registers with `Legion::Extensions::Llm::Provider` as `:anthropic` and uses Anthropic's Messages API:
 
 - chat and streaming: `/v1/messages`
 - model discovery: `/v1/models`
@@ -19,7 +19,7 @@ Anthropic embeddings are intentionally not exposed by this provider.
 ## Configuration
 
 ```ruby
-LexLLM.configure do |config|
+Legion::Extensions::Llm.configure do |config|
   config.anthropic_api_key = ENV.fetch('ANTHROPIC_API_KEY')
   config.anthropic_version = '2023-06-01'
 end

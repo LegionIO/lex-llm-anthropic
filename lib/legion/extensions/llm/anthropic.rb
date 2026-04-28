@@ -35,5 +35,5 @@ module Legion
   end
 end
 
-LexLLM::Provider.register(Legion::Extensions::Llm::Anthropic::PROVIDER_FAMILY,
-                          Legion::Extensions::Llm::Anthropic::Provider)
+Legion::Extensions::Llm::Provider.register(Legion::Extensions::Llm::Anthropic::PROVIDER_FAMILY,
+                                           Legion::Extensions::Llm::Anthropic::Provider)
