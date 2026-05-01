@@ -3,19 +3,13 @@
 require 'spec_helper'
 
 RSpec.describe Legion::Extensions::Llm::Anthropic do
-  let(:provider) { described_class::Provider.new(Legion::Extensions::Llm.config) }
+  let(:provider_config) { { anthropic_api_key: 'test-anthropic-key', anthropic_version: '2023-06-01' } }
+  let(:provider) { described_class::Provider.new(provider_config) }
   let(:claude_model) do
     Legion::Extensions::Llm::Model::Info.new(id: 'claude-sonnet-4-5-20250929', provider: :anthropic,
-                                             max_output_tokens: 8192)
+                                             metadata: { max_output_tokens: 8192 })
   end
   let(:registry_publisher) { instance_double(described_class::RegistryPublisher) }
-
-  before do
-    Legion::Extensions::Llm.configure do |config|
-      config.anthropic_api_key = 'test-anthropic-key'
-      config.anthropic_version = '2023-06-01'
-    end
-  end
 
   it 'exposes provider defaults with inherited fleet settings' do
     settings = described_class.default_settings
@@ -26,8 +20,10 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     expect(settings.dig(:instances, :default, :usage, :embedding)).to be false
   end
 
-  it 'registers the Legion::Extensions::Llm provider class' do
-    expect(Legion::Extensions::Llm::Provider.resolve(:anthropic)).to eq(described_class::Provider)
+  it 'extends AutoRegistration for multi-instance discovery' do
+    expect(described_class).to respond_to(:discover_instances)
+    expect(described_class).to respond_to(:register_discovered_instances)
+    expect(described_class).to respond_to(:rediscover!)
   end
 
   it 'exposes Anthropic endpoint helpers and headers' do
