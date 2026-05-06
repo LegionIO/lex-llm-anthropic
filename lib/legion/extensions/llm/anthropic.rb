@@ -42,6 +42,10 @@ module Legion
           Provider
         end
 
+        def self.provider_aliases
+          [:claude]
+        end
+
         def self.discover_instances # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
           candidates = {}
 
@@ -112,20 +116,9 @@ module Legion
           normalized.compact.except(:instances)
         end
 
-        def self.register_discovered_instances
-          super
-          return unless defined?(Legion::LLM::Call::Registry)
-
-          Legion::LLM::Call::Registry.instances_for(:anthropic).each do |instance_id, adapter|
-            Legion::LLM::Call::Registry.register(:claude, adapter, instance: instance_id)
-          end
-        end
-
         Legion::Extensions::Llm::Configuration.register_provider_options(Provider.configuration_options) if
           Legion::Extensions::Llm::Configuration.respond_to?(:register_provider_options)
       end
     end
   end
 end
-
-Legion::Extensions::Llm::Anthropic.register_discovered_instances

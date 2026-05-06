@@ -124,70 +124,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
     end
   end
 
-  describe '.register_discovered_instances' do
-    let(:registry) do
-      Module.new do
-        def self.register(*args, **kwargs); end
-
-        def self.instances_for(_name)
-          {}
-        end
-      end
-    end
-    let(:adapter_class) { Class.new { def initialize(*args, **kwargs); end } }
-
-    before do
-      stub_const('Legion::LLM::Call::Registry', registry)
-      stub_const('Legion::LLM::Call::LexLLMAdapter', adapter_class)
-      allow(credential_sources).to receive(:env).with('ANTHROPIC_API_KEY').and_return(nil)
-      allow(credential_sources).to receive(:claude_config_value).with(:anthropicApiKey).and_return(nil)
-      allow(credential_sources).to receive(:setting).with(:extensions, :llm, :anthropic).and_return(nil)
-      hide_const('Legion::Identity::Broker')
-    end
-
-    it 'registers discovered instances under :claude alias' do
-      stub_env_with_adapter
-
-      expect(registry).to have_received(:register).with(
-        :anthropic, an_instance_of(adapter_class), instance: :env, metadata: { tier: :frontier, capabilities: [] }
-      )
-      expect(registry).to have_received(:register).with(:claude, anything, instance: :env)
-    end
-
-    it 'registers all anthropic instances under :claude' do
-      stub_multi_instance_adapters
-
-      expect(registry).to have_received(:register).with(:claude, anything, instance: :env)
-      expect(registry).to have_received(:register).with(:claude, anything, instance: :claude)
-    end
-
-    it 'is a no-op when Call::Registry is not defined' do
-      hide_const('Legion::LLM::Call::Registry')
-      hide_const('Legion::LLM::Call::LexLLMAdapter')
-
-      expect { described_class.register_discovered_instances }.not_to raise_error
-    end
-
-    def stub_registry_methods(adapter_instances)
-      allow(registry).to receive(:register)
-      allow(registry).to receive(:instances_for).with(:anthropic).and_return(adapter_instances)
-    end
-
-    def stub_env_with_adapter
-      allow(credential_sources).to receive(:env).with('ANTHROPIC_API_KEY').and_return('sk-test-key')
-      stub_registry_methods(env: adapter_class.new)
-      described_class.register_discovered_instances
-    end
-
-    def stub_credential_sources_for_multi
-      allow(credential_sources).to receive(:env).with('ANTHROPIC_API_KEY').and_return('sk-key-1')
-      allow(credential_sources).to receive(:claude_config_value).with(:anthropicApiKey).and_return('sk-key-2')
-    end
-
-    def stub_multi_instance_adapters
-      stub_credential_sources_for_multi
-      stub_registry_methods(env: adapter_class.new, claude: adapter_class.new)
-      described_class.register_discovered_instances
+  describe '.provider_aliases' do
+    it 'declares the legacy :claude family alias for legion-llm registration' do
+      expect(described_class.provider_aliases).to eq([:claude])
     end
   end
 end

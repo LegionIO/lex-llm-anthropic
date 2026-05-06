@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.3 - 2026-05-06
+
+- Remove require-time provider self-registration; `legion-llm` now owns adapter creation and registry writes from loaded provider discovery metadata.
+- Declare the `:claude` compatibility provider family through `provider_aliases`.
+- Bump dependency floors to `lex-llm >= 0.4.1` and `legion-llm >= 0.9.1`.
+
 ## 0.2.2 - 2026-05-06
 
 - Enforce the shared keyword-only `lex-llm` provider contract with provider contract specs.

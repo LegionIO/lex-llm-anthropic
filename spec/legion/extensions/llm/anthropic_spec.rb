@@ -23,10 +23,11 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     )
   end
 
-  it 'extends AutoRegistration for multi-instance discovery' do
+  it 'extends AutoRegistration for multi-instance discovery and provider aliases' do
     expect(described_class).to respond_to(:discover_instances)
-    expect(described_class).to respond_to(:register_discovered_instances)
-    expect(described_class).to respond_to(:rediscover!)
+    expect(described_class.provider_aliases).to eq([:claude])
+    expect(described_class).not_to respond_to(:register_discovered_instances)
+    expect(described_class).not_to respond_to(:rediscover!)
   end
 
   it 'exposes Anthropic endpoint helpers and headers' do
