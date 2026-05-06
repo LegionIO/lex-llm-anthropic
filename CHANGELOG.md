@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4 - 2026-05-06
+
+- Use the shared `lex-llm` fleet provider responder helper for provider-owned fleet workers.
+- Remove the runtime `legion-llm` dependency and require `lex-llm >= 0.4.3` for responder-side fleet execution.
+
 ## 0.2.3 - 2026-05-06
 
 - Remove require-time provider self-registration; `legion-llm` now owns adapter creation and registry writes from loaded provider discovery metadata.

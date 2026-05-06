@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require 'legion/llm/fleet/provider_responder'
+require 'legion/extensions/llm/fleet/provider_responder'
 
 module Legion
   module Extensions
@@ -22,7 +22,7 @@ module Legion
             end
 
             def enabled?
-              Legion::LLM::Fleet::ProviderResponder.enabled_for?(Anthropic.discover_instances)
+              Legion::Extensions::Llm::Fleet::ProviderResponder.enabled_for?(Anthropic.discover_instances)
             end
           end
         end

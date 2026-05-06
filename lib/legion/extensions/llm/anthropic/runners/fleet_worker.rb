@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require 'legion/llm/fleet/provider_responder'
+require 'legion/extensions/llm/fleet/provider_responder'
 require 'legion/extensions/llm/anthropic/provider'
 
 module Legion
@@ -13,7 +13,7 @@ module Legion
             module_function
 
             def handle_fleet_request(payload, delivery: nil, properties: nil)
-              Legion::LLM::Fleet::ProviderResponder.call(
+              Legion::Extensions::Llm::Fleet::ProviderResponder.call(
                 payload: payload,
                 provider_family: Anthropic::PROVIDER_FAMILY,
                 provider_class: Anthropic::Provider,
