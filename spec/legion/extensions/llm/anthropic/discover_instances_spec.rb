@@ -18,14 +18,13 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
     it 'returns the :env instance when ANTHROPIC_API_KEY is set' do
       allow(credential_sources).to receive(:env).with('ANTHROPIC_API_KEY').and_return('sk-ant-env-key')
 
-      expect(discover[:env]).to eq(api_key: 'sk-ant-env-key', anthropic_api_key: 'sk-ant-env-key', tier: :frontier)
+      expect(discover[:env]).to eq(anthropic_api_key: 'sk-ant-env-key', tier: :frontier)
     end
 
     it 'returns the :claude instance when claude config has anthropicApiKey' do
       allow(credential_sources).to receive(:claude_config_value).with(:anthropicApiKey).and_return('sk-ant-claude-key')
 
-      expect(discover[:claude]).to eq(api_key: 'sk-ant-claude-key', anthropic_api_key: 'sk-ant-claude-key',
-                                      tier: :frontier)
+      expect(discover[:claude]).to eq(anthropic_api_key: 'sk-ant-claude-key', tier: :frontier)
     end
 
     it 'returns the :settings instance when extension settings have api_key' do
@@ -40,6 +39,28 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
       expect(discover[:settings][:anthropic_version]).to eq('2023-06-01')
     end
 
+    it 'normalizes generic settings keys to provider config keys' do # rubocop:disable RSpec/ExampleLength
+      stub_setting(api_key: 'sk-ant-settings-key', base_url: 'https://proxy.example', version: '2024-01-01')
+
+      expect(discover[:settings]).to include(
+        anthropic_api_key: 'sk-ant-settings-key',
+        anthropic_api_base: 'https://proxy.example',
+        anthropic_version: '2024-01-01'
+      )
+      expect(discover[:settings]).not_to have_key(:base_url)
+      expect(discover[:settings]).not_to have_key(:api_key)
+    end
+
+    it 'discovers named instances from extension settings' do # rubocop:disable RSpec/ExampleLength
+      stub_setting(instances: { west: { api_key: 'sk-ant-west', endpoint: 'https://west.example' } })
+
+      expect(discover[:west]).to include(
+        anthropic_api_key: 'sk-ant-west',
+        anthropic_api_base: 'https://west.example',
+        tier: :frontier
+      )
+    end
+
     it 'omits the :settings instance when settings hash has no api_key' do
       stub_setting(anthropic_version: '2023-06-01')
 
@@ -49,8 +70,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
     it 'returns the :broker instance when Legion::Identity::Broker provides a credential' do
       stub_broker('sk-ant-broker-key')
 
-      expect(discover[:broker]).to eq(api_key: 'sk-ant-broker-key', anthropic_api_key: 'sk-ant-broker-key',
-                                      tier: :frontier)
+      expect(discover[:broker]).to eq(anthropic_api_key: 'sk-ant-broker-key', tier: :frontier)
     end
 
     it 'omits the :broker instance when Broker returns nil' do
@@ -103,68 +123,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
     end
   end
 
-  describe '.register_discovered_instances' do
-    let(:registry) do
-      Module.new do
-        def self.register(*args, **kwargs); end
-
-        def self.instances_for(_name)
-          {}
-        end
-      end
-    end
-    let(:adapter_class) { Class.new { def initialize(*args, **kwargs); end } }
-
-    before do
-      stub_const('Legion::LLM::Call::Registry', registry)
-      stub_const('Legion::LLM::Call::LexLLMAdapter', adapter_class)
-      allow(credential_sources).to receive(:env).with('ANTHROPIC_API_KEY').and_return(nil)
-      allow(credential_sources).to receive(:claude_config_value).with(:anthropicApiKey).and_return(nil)
-      allow(credential_sources).to receive(:setting).with(:extensions, :llm, :anthropic).and_return(nil)
-      hide_const('Legion::Identity::Broker')
-    end
-
-    it 'registers discovered instances under :claude alias' do
-      stub_env_with_adapter
-
-      expect(registry).to have_received(:register).with(:anthropic, an_instance_of(adapter_class), instance: :env)
-      expect(registry).to have_received(:register).with(:claude, anything, instance: :env)
-    end
-
-    it 'registers all anthropic instances under :claude' do
-      stub_multi_instance_adapters
-
-      expect(registry).to have_received(:register).with(:claude, anything, instance: :env)
-      expect(registry).to have_received(:register).with(:claude, anything, instance: :claude)
-    end
-
-    it 'is a no-op when Call::Registry is not defined' do
-      hide_const('Legion::LLM::Call::Registry')
-      hide_const('Legion::LLM::Call::LexLLMAdapter')
-
-      expect { described_class.register_discovered_instances }.not_to raise_error
-    end
-
-    def stub_registry_methods(adapter_instances)
-      allow(registry).to receive(:register)
-      allow(registry).to receive(:instances_for).with(:anthropic).and_return(adapter_instances)
-    end
-
-    def stub_env_with_adapter
-      allow(credential_sources).to receive(:env).with('ANTHROPIC_API_KEY').and_return('sk-test-key')
-      stub_registry_methods(env: adapter_class.new)
-      described_class.register_discovered_instances
-    end
-
-    def stub_credential_sources_for_multi
-      allow(credential_sources).to receive(:env).with('ANTHROPIC_API_KEY').and_return('sk-key-1')
-      allow(credential_sources).to receive(:claude_config_value).with(:anthropicApiKey).and_return('sk-key-2')
-    end
-
-    def stub_multi_instance_adapters
-      stub_credential_sources_for_multi
-      stub_registry_methods(env: adapter_class.new, claude: adapter_class.new)
-      described_class.register_discovered_instances
+  describe '.provider_aliases' do
+    it 'declares the legacy :claude family alias for routing compatibility' do
+      expect(described_class.provider_aliases).to eq([:claude])
     end
   end
 end
