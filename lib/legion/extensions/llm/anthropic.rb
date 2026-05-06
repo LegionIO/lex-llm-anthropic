@@ -72,6 +72,7 @@ module Legion
             settings_key = settings_config[:api_key] || settings_config['api_key']
             if settings_key
               candidates[:settings] = normalize_instance_config(settings_config).merge(
+                api_key: settings_key,
                 anthropic_api_key: settings_key,
                 tier: :frontier
               )
@@ -83,6 +84,7 @@ module Legion
               normalized = normalize_instance_config(config)
               next unless normalized[:anthropic_api_key]
 
+              normalized[:api_key] = normalized[:anthropic_api_key]
               candidates[name.to_sym] = normalized.merge(tier: :frontier)
             end
           end
@@ -98,7 +100,7 @@ module Legion
             end
           end
 
-          CredentialSources.dedup_credentials(candidates)
+          CredentialSources.dedup_credentials(candidates).transform_values { |config| sanitize_instance_config(config) }
         end
 
         def self.settings_instances(config)
@@ -108,12 +110,16 @@ module Legion
 
         def self.normalize_instance_config(config) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity
           normalized = config.to_h.transform_keys { |key| key.respond_to?(:to_sym) ? key.to_sym : key }
-          normalized[:anthropic_api_key] ||= normalized[:api_key]
+          normalized[:anthropic_api_key] ||= normalized.delete(:api_key)
           normalized[:anthropic_api_base] ||= normalized.delete(:base_url)
           normalized[:anthropic_api_base] ||= normalized.delete(:api_base)
           normalized[:anthropic_api_base] ||= normalized.delete(:endpoint)
           normalized[:anthropic_version] ||= normalized.delete(:version)
           normalized.compact.except(:instances)
+        end
+
+        def self.sanitize_instance_config(config)
+          config.except(:api_key)
         end
 
         Legion::Extensions::Llm::Configuration.register_provider_options(Provider.configuration_options) if

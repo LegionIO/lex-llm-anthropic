@@ -1,5 +1,16 @@
 # frozen_string_literal: true
 
+begin
+  require 'legion/extensions/actors/subscription'
+rescue LoadError => e
+  warn(e.message) if $VERBOSE
+end
+
+unless defined?(Legion::Extensions::Actors::Subscription)
+  raise LoadError, 'LegionIO actor runtime is required for Anthropic fleet worker'
+end
+
+require 'legion/extensions/llm/anthropic'
 require 'legion/extensions/llm/fleet/provider_responder'
 
 module Legion

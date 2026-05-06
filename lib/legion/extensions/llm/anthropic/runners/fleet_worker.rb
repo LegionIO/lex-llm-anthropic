@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/llm/fleet/provider_responder'
-require 'legion/extensions/llm/anthropic/provider'
+require 'legion/extensions/llm/anthropic'
 
 module Legion
   module Extensions
