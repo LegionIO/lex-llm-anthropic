@@ -4,6 +4,7 @@
 
 - Use the shared `lex-llm` fleet provider responder helper for provider-owned fleet workers.
 - Remove the runtime `legion-llm` dependency and require `lex-llm >= 0.4.3` for responder-side fleet execution.
+- Refresh README installation, credential discovery, and fleet ownership documentation for the runtime dependency split.
 
 ## 0.2.3 - 2026-05-06
 
