@@ -11,13 +11,16 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   end
   let(:registry_publisher) { instance_double(described_class::RegistryPublisher) }
 
-  it 'exposes provider defaults with inherited fleet settings' do
+  it 'exposes provider defaults with inherited fleet settings' do # rubocop:disable RSpec/ExampleLength
     settings = described_class.default_settings
 
     expect(settings[:provider_family]).to eq(:anthropic)
-    expect(settings[:fleet]).to include(:enabled)
-    expect(settings.dig(:instances, :default, :endpoint)).to eq('https://api.anthropic.com')
-    expect(settings.dig(:instances, :default, :usage, :embedding)).to be false
+    expect(settings.dig(:fleet, :consumer, :enabled)).to be false
+    expect(settings.dig(:instances, :default)).to include(
+      endpoint: 'https://api.anthropic.com',
+      fleet: hash_including(respond_to_requests: false),
+      usage: hash_including(embedding: false)
+    )
   end
 
   it 'extends AutoRegistration for multi-instance discovery' do

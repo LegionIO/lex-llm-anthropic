@@ -47,7 +47,14 @@ module Legion
           def stream_url = completion_url
           def models_url = '/v1/models'
 
-          def embed(_text, model:, dimensions:)
+          def embed(
+            text:,
+            model:,
+            dimensions: nil,
+            params: {},
+            headers: {}
+          )
+            _ = [text, model, dimensions, params, headers]
             raise NotImplementedError, 'Anthropic does not expose embeddings through this provider'
           end
 

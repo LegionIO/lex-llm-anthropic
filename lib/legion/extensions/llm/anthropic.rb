@@ -24,8 +24,16 @@ module Legion
               tier: :frontier,
               transport: :http,
               credentials: { api_key: 'env://ANTHROPIC_API_KEY' },
-              usage: { inference: true, embedding: false },
-              limits: { concurrency: 4 }
+              usage: { inference: true, embedding: false, image: false },
+              limits: { concurrency: 4 },
+              fleet: {
+                enabled: false,
+                respond_to_requests: false,
+                capabilities: %i[chat stream_chat],
+                lanes: [],
+                concurrency: 4,
+                queue_suffix: nil
+              }
             }
           )
         end
@@ -34,7 +42,7 @@ module Legion
           Provider
         end
 
-        def self.discover_instances # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity
+        def self.discover_instances # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
           candidates = {}
 
           env_key = CredentialSources.env('ANTHROPIC_API_KEY')
@@ -59,10 +67,19 @@ module Legion
           if settings_config.is_a?(Hash)
             settings_key = settings_config[:api_key] || settings_config['api_key']
             if settings_key
-              candidates[:settings] = settings_config.merge(
+              candidates[:settings] = normalize_instance_config(settings_config).merge(
                 anthropic_api_key: settings_key,
                 tier: :frontier
               )
+            end
+
+            settings_instances(settings_config).each do |name, config|
+              next unless config.is_a?(Hash)
+
+              normalized = normalize_instance_config(config)
+              next unless normalized[:anthropic_api_key]
+
+              candidates[name.to_sym] = normalized.merge(tier: :frontier)
             end
           end
 
@@ -80,6 +97,21 @@ module Legion
           CredentialSources.dedup_credentials(candidates)
         end
 
+        def self.settings_instances(config)
+          instances = config[:instances] || config['instances']
+          instances.is_a?(Hash) ? instances : {}
+        end
+
+        def self.normalize_instance_config(config) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity
+          normalized = config.to_h.transform_keys { |key| key.respond_to?(:to_sym) ? key.to_sym : key }
+          normalized[:anthropic_api_key] ||= normalized[:api_key]
+          normalized[:anthropic_api_base] ||= normalized.delete(:base_url)
+          normalized[:anthropic_api_base] ||= normalized.delete(:api_base)
+          normalized[:anthropic_api_base] ||= normalized.delete(:endpoint)
+          normalized[:anthropic_version] ||= normalized.delete(:version)
+          normalized.compact.except(:instances)
+        end
+
         def self.register_discovered_instances
           super
           return unless defined?(Legion::LLM::Call::Registry)
@@ -88,6 +120,9 @@ module Legion
             Legion::LLM::Call::Registry.register(:claude, adapter, instance: instance_id)
           end
         end
+
+        Legion::Extensions::Llm::Configuration.register_provider_options(Provider.configuration_options) if
+          Legion::Extensions::Llm::Configuration.respond_to?(:register_provider_options)
       end
     end
   end

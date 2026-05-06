@@ -40,6 +40,27 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
       expect(discover[:settings][:anthropic_version]).to eq('2023-06-01')
     end
 
+    it 'normalizes generic settings keys to provider config keys' do # rubocop:disable RSpec/ExampleLength
+      stub_setting(api_key: 'sk-ant-settings-key', base_url: 'https://proxy.example', version: '2024-01-01')
+
+      expect(discover[:settings]).to include(
+        anthropic_api_key: 'sk-ant-settings-key',
+        anthropic_api_base: 'https://proxy.example',
+        anthropic_version: '2024-01-01'
+      )
+      expect(discover[:settings]).not_to have_key(:base_url)
+    end
+
+    it 'discovers named instances from extension settings' do # rubocop:disable RSpec/ExampleLength
+      stub_setting(instances: { west: { api_key: 'sk-ant-west', endpoint: 'https://west.example' } })
+
+      expect(discover[:west]).to include(
+        anthropic_api_key: 'sk-ant-west',
+        anthropic_api_base: 'https://west.example',
+        tier: :frontier
+      )
+    end
+
     it 'omits the :settings instance when settings hash has no api_key' do
       stub_setting(anthropic_version: '2023-06-01')
 
@@ -127,7 +148,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
     it 'registers discovered instances under :claude alias' do
       stub_env_with_adapter
 
-      expect(registry).to have_received(:register).with(:anthropic, an_instance_of(adapter_class), instance: :env)
+      expect(registry).to have_received(:register).with(
+        :anthropic, an_instance_of(adapter_class), instance: :env, metadata: { tier: :frontier, capabilities: [] }
+      )
       expect(registry).to have_received(:register).with(:claude, anything, instance: :env)
     end
 
