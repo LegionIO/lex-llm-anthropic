@@ -125,7 +125,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
   end
 
   describe '.provider_aliases' do
-    it 'declares the legacy :claude family alias for legion-llm registration' do
+    it 'declares the legacy :claude family alias for routing compatibility' do
       expect(described_class.provider_aliases).to eq([:claude])
     end
   end
