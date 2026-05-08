@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.6 - 2026-05-08
+
+- Accept keyword arguments in `list_models` to match the base provider contract called by `discover_offerings`.
+
 ## 0.2.5 - 2026-05-06
 
 - Load provider-owned fleet actors through the LegionIO subscription base and the canonical Anthropic provider root.
