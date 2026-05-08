@@ -51,7 +51,7 @@ module Legion
             raise NotImplementedError, 'Anthropic does not expose embeddings through this provider'
           end
 
-          def list_models
+          def list_models(**)
             super.tap do |models|
               self.class.registry_publisher.publish_models_async(models, readiness: readiness(live: false))
             end
