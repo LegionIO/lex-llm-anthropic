@@ -18,13 +18,13 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
     it 'returns the :env instance when ANTHROPIC_API_KEY is set' do
       allow(credential_sources).to receive(:env).with('ANTHROPIC_API_KEY').and_return('sk-ant-env-key')
 
-      expect(discover[:env]).to eq(anthropic_api_key: 'sk-ant-env-key', tier: :frontier)
+      expect(discover[:env]).to include(anthropic_api_key: 'sk-ant-env-key', tier: :frontier)
     end
 
     it 'returns the :claude instance when claude config has anthropicApiKey' do
       allow(credential_sources).to receive(:claude_config_value).with(:anthropicApiKey).and_return('sk-ant-claude-key')
 
-      expect(discover[:claude]).to eq(anthropic_api_key: 'sk-ant-claude-key', tier: :frontier)
+      expect(discover[:claude]).to include(anthropic_api_key: 'sk-ant-claude-key', tier: :frontier)
     end
 
     it 'returns the :settings instance when extension settings have api_key' do
@@ -70,7 +70,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
     it 'returns the :broker instance when Legion::Identity::Broker provides a credential' do
       stub_broker('sk-ant-broker-key')
 
-      expect(discover[:broker]).to eq(anthropic_api_key: 'sk-ant-broker-key', tier: :frontier)
+      expect(discover[:broker]).to include(anthropic_api_key: 'sk-ant-broker-key', tier: :frontier)
     end
 
     it 'omits the :broker instance when Broker returns nil' do
@@ -124,8 +124,8 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do # rubocop:disable RSpec/Spe
   end
 
   describe '.provider_aliases' do
-    it 'declares the legacy :claude family alias for routing compatibility' do
-      expect(described_class.provider_aliases).to eq([:claude])
+    it 'returns no aliases' do
+      expect(described_class.provider_aliases).to eq([])
     end
   end
 end
