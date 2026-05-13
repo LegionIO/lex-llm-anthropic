@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/llm'
+require 'legion/logging/helper'
 
 module Legion
   module Extensions
@@ -8,6 +9,8 @@ module Legion
       module Anthropic
         # Anthropic Messages API provider implementation for the Legion::Extensions::Llm contract.
         class Provider < Legion::Extensions::Llm::Provider # rubocop:disable Metrics/ClassLength
+          include Legion::Logging::Helper
+
           class << self
             attr_writer :registry_publisher
 
@@ -52,7 +55,9 @@ module Legion
           end
 
           def list_models(**)
+            log.debug { 'listing available Anthropic models' }
             super.tap do |models|
+              log.debug { "discovered #{Array(models).size} Anthropic model(s); publishing to registry" }
               self.class.registry_publisher.publish_models_async(models, readiness: readiness(live: false))
             end
           end
@@ -60,6 +65,7 @@ module Legion
           private
 
           def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:) # rubocop:disable Metrics/ParameterLists
+            log_render_payload(messages:, tools:, model:, stream:, schema:)
             system_messages, chat_messages = messages.partition { |message| message.role == :system }
 
             {
@@ -74,6 +80,13 @@ module Legion
               tool_choice: tool_choice(tool_prefs),
               output_config: output_config(schema)
             }.compact
+          end
+
+          def log_render_payload(messages:, tools:, model:, stream:, schema:)
+            log.debug do
+              "rendering Anthropic #{stream ? 'stream' : 'chat'} payload for #{model.id} " \
+                "with #{messages.size} message(s), #{tools.size} tool(s), schema=#{!schema.nil?}"
+            end
           end
 
           def system_content(messages)

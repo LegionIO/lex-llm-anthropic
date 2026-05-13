@@ -1,12 +1,21 @@
 # frozen_string_literal: true
 
+require 'legion/logging/helper'
+
+actor_load_logger = Object.new.extend(Legion::Logging::Helper)
+actor_load_logger.define_singleton_method(:lex_filename) { 'llm_anthropic' }
+
 begin
   require 'legion/extensions/actors/subscription'
 rescue LoadError => e
-  warn(e.message) if $VERBOSE
+  subscription_load_error = e
 end
 
 unless defined?(Legion::Extensions::Actors::Subscription)
+  if subscription_load_error
+    actor_load_logger.handle_exception(subscription_load_error, level: :warn, handled: true,
+                                                                operation: 'anthropic.actor.subscription_load')
+  end
   raise LoadError, 'LegionIO actor runtime is required for Anthropic fleet worker'
 end
 
