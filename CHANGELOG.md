@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.8 - 2026-05-13
+
+- Remove `:claude` provider alias (`provider_aliases` now returns `[]`).
+- Attach `source` and `credential_fingerprint` to all discovered instances.
+- Inject `default_model: 'claude-sonnet-4-6'` and `capabilities: [:completion, :streaming, :vision]` into every discovered instance.
+- Add static `CONTEXT_WINDOWS` map for known Claude model families.
+- Override `fetch_model_detail` to return context window from static map.
+- Use `model_detail` in `parse_list_models_response` for cached `context_length` lookup.
+- Add `infer_context_window` helper for prefix-based context window inference.
+
 ## 0.2.7 - 2026-05-13
 
 - Use `Legion::Logging::Helper` for Anthropic provider and registry diagnostics.

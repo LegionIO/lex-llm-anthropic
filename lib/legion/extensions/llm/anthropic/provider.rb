@@ -62,6 +62,16 @@ module Legion
             end
           end
 
+          CONTEXT_WINDOWS = {
+            'claude-opus-4' => 200_000,
+            'claude-sonnet-4' => 200_000,
+            'claude-haiku-4' => 200_000,
+            'claude-3-5' => 200_000,
+            'claude-3-opus' => 200_000,
+            'claude-3-sonnet' => 200_000,
+            'claude-3-haiku' => 200_000
+          }.freeze
+
           private
 
           def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:) # rubocop:disable Metrics/ParameterLists
@@ -360,13 +370,25 @@ module Legion
           def parse_list_models_response(response, provider, _capabilities)
             Array(response.body['data']).map do |model|
               model_id = model.fetch('id')
+              detail = model_detail(model_id)
+              ctx = detail&.dig(:context_window) || infer_context_window(model_id)
               Legion::Extensions::Llm::Model::Info.new(
                 id: model_id,
                 name: model['display_name'] || model_id,
                 provider: provider,
+                context_length: ctx,
                 metadata: model.merge('created_at' => model['created_at']).compact
               )
             end
+          end
+
+          def infer_context_window(model_id)
+            CONTEXT_WINDOWS.find { |prefix, _| model_id.start_with?(prefix) }&.last
+          end
+
+          def fetch_model_detail(model_name)
+            ctx = infer_context_window(model_name)
+            ctx ? { context_window: ctx } : nil
           end
         end
       end
