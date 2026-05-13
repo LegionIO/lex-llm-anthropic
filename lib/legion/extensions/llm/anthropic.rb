@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/llm'
+require 'legion/logging/helper'
 require 'legion/extensions/llm/anthropic/registry_event_builder'
 require 'legion/extensions/llm/anthropic/registry_publisher'
 require 'legion/extensions/llm/anthropic/provider'
@@ -12,6 +13,7 @@ module Legion
       # Anthropic provider extension namespace.
       module Anthropic
         extend ::Legion::Extensions::Core if ::Legion::Extensions.const_defined?(:Core, false)
+        extend Legion::Logging::Helper
         extend Legion::Extensions::Llm::AutoRegistration
 
         PROVIDER_FAMILY = :anthropic

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.7 - 2026-05-13
+
+- Use `Legion::Logging::Helper` for Anthropic provider and registry diagnostics.
+- Route registry fallback errors through `handle_exception` with useful operation metadata.
+
 ## 0.2.6 - 2026-05-08
 
 - Accept keyword arguments in `list_models` to match the base provider contract called by `discover_offerings`.
