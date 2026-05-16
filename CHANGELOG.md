@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9 - 2026-05-16
+
+- Advertise Anthropic tool support in discovered instance and model metadata so capability-aware routing can select Claude models for native tool requests.
+
 ## 0.2.8 - 2026-05-13
 
 - Remove `:claude` provider alias (`provider_aliases` now returns `[]`).

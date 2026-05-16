@@ -117,7 +117,7 @@ module Legion
 
           CredentialSources.dedup_credentials(candidates).transform_values do |config|
             sanitized = sanitize_instance_config(config)
-            sanitized[:capabilities] ||= %i[completion streaming vision].freeze
+            sanitized[:capabilities] ||= %i[completion streaming vision tools].freeze
             sanitized[:default_model] ||= 'claude-sonnet-4-6'
             sanitized
           end
