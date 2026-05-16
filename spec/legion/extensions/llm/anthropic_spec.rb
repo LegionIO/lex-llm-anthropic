@@ -73,6 +73,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     models = parsed_models
 
     expect(models.first.to_h).to include(expected_model_listing)
+    expect(models.first.capabilities).to include(:completion, :streaming, :tools)
   end
 
   it 'publishes discovered models asynchronously through the registry publisher' do

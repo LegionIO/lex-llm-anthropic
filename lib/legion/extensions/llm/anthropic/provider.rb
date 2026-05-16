@@ -376,6 +376,7 @@ module Legion
                 id: model_id,
                 name: model['display_name'] || model_id,
                 provider: provider,
+                capabilities: %i[completion streaming tools],
                 context_length: ctx,
                 metadata: model.merge('created_at' => model['created_at']).compact
               )
