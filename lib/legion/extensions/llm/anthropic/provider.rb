@@ -362,8 +362,6 @@ module Legion
               return nil unless partial
 
               { nil => Legion::Extensions::Llm::ToolCall.new(id: nil, name: nil, arguments: partial) }
-            else
-              nil
             end
           end
 
