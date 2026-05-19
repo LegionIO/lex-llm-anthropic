@@ -347,8 +347,22 @@ module Legion
               ),
               input_tokens: data.dig('message', 'usage', 'input_tokens'),
               output_tokens: data.dig('message', 'usage', 'output_tokens') || data.dig('usage', 'output_tokens'),
-              tool_calls: parse_tool_calls(data['content_block'])
+              tool_calls: extract_streaming_tool_calls(data, delta_type)
             )
+          end
+
+          def extract_streaming_tool_calls(data, delta_type)
+            content_block = data['content_block']
+            if content_block && content_block['type'] == 'tool_use'
+              { content_block['id'] => Legion::Extensions::Llm::ToolCall.new(
+                id: content_block['id'], name: content_block['name'], arguments: ''
+              ) }
+            elsif delta_type == 'input_json_delta'
+              partial = data.dig('delta', 'partial_json')
+              return nil unless partial
+
+              { nil => Legion::Extensions::Llm::ToolCall.new(id: nil, name: nil, arguments: partial) }
+            end
           end
 
           def parse_tool_calls(content_blocks)
