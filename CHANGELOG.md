@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.10 - 2026-05-18
+
+- Fix streaming tool call input accumulation: `build_chunk` now handles both `content_block_start` (tool_use with id+name) and `input_json_delta` (partial argument fragments) events. Previously only the start event was parsed, resulting in tool calls with empty arguments.
+
+
 ## 0.2.9 - 2026-05-16
 
 - Advertise Anthropic tool support in discovered instance and model metadata so capability-aware routing can select Claude models for native tool requests.
