@@ -35,6 +35,10 @@ module Legion
             def embeddings?(_model) = false
           end
 
+          def settings
+            Anthropic.default_settings
+          end
+
           def api_base
             config.anthropic_api_base || settings[:endpoint] || 'https://api.anthropic.com'
           end
