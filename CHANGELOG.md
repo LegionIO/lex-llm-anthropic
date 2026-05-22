@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.11 - 2026-05-21
+
+- Add `api_version` and `default_max_tokens` to default_settings
+- api_base and anthropic-version read from settings fallback
+- max_tokens reads from settings[:default_max_tokens]
+- Identity headers included via base provider
+
+
 ## 0.2.10 - 2026-05-18
 
 - Fix streaming tool call input accumulation: `build_chunk` now handles both `content_block_start` (tool_use with id+name) and `input_json_delta` (partial argument fragments) events. Previously only the start event was parsed, resulting in tool calls with empty arguments.

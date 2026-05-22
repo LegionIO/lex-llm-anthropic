@@ -24,6 +24,8 @@ module Legion
             instance: {
               default_model: 'claude-sonnet-4-6',
               endpoint: 'https://api.anthropic.com',
+              api_version: '2023-06-01',
+              default_max_tokens: 4096,
               tier: :frontier,
               transport: :http,
               credentials: { api_key: 'env://ANTHROPIC_API_KEY' },
