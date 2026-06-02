@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.13 - 2026-06-02
+
+- **Fix invalid anthropic-version header** — Default `api_version` was `'2023-10-02'` (typo), which Anthropic rejects. Changed to `'2023-10-16'` (anthropic.rb)
+- **Add per-provider discovery refresh actor** — New `actors/discovery_refresh.rb` that only refreshes Anthropic models, avoiding coupling to other providers' discovery cycles
+
 ## 0.2.12 - 2026-06-01
 
 - Add `cache_control` markers to Anthropic Messages API requests for prompt caching
