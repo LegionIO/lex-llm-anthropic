@@ -46,7 +46,7 @@ module Legion
           def headers
             identity_headers.merge({
               'x-api-key' => config.anthropic_api_key,
-              'anthropic-version' => config.anthropic_version || settings[:api_version] || '2023-06-01'
+              'anthropic-version' => config.anthropic_version || settings[:api_version] || '2023-10-02'
             }.compact)
           end
 
@@ -304,7 +304,7 @@ module Legion
             normalized = normalized.dup
             normalized.delete(:strict)
             normalized.delete('strict')
-            { format: { type: 'json_schema', schema: normalized } }
+            { format: { type: 'json', schema: normalized } }
           end
 
           def parse_completion_response(response)
@@ -372,18 +372,13 @@ module Legion
             )
           end
 
-          def extract_streaming_tool_calls(data, delta_type)
+          def extract_streaming_tool_calls(data, _delta_type)
             content_block = data['content_block']
-            if content_block && content_block['type'] == 'tool_use'
-              { content_block['id'] => Legion::Extensions::Llm::ToolCall.new(
-                id: content_block['id'], name: content_block['name'], arguments: ''
-              ) }
-            elsif delta_type == 'input_json_delta'
-              partial = data.dig('delta', 'partial_json')
-              return nil unless partial
+            return nil unless content_block && content_block['type'] == 'tool_use'
 
-              { nil => Legion::Extensions::Llm::ToolCall.new(id: nil, name: nil, arguments: partial) }
-            end
+            { content_block['id'] => Legion::Extensions::Llm::ToolCall.new(
+              id: content_block['id'], name: content_block['name'], arguments: ''
+            ) }
           end
 
           def parse_tool_calls(content_blocks)
@@ -420,6 +415,10 @@ module Legion
 
           def infer_context_window(model_id)
             CONTEXT_WINDOWS.find { |prefix, _| model_id.start_with?(prefix) }&.last
+          end
+
+          def model_detail(model_name)
+            fetch_model_detail(model_name)
           end
 
           def fetch_model_detail(model_name)
