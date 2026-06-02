@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.12 - 2026-06-01
+
+- Add `cache_control` markers to Anthropic Messages API requests for prompt caching
+- System content and tool definitions are marked as cache breakpoints when `cache_enabled?`
+- Early conversation turns are cacheable; final message is never cached (prefix break guard)
+- Uses `cache_control_prefix_tokens` from lex-llm base provider for exclude count (default 4)
+
 ## 0.2.11 - 2026-05-21
 
 - Add `api_version` and `default_max_tokens` to default_settings

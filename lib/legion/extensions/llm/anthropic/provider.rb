@@ -46,7 +46,7 @@ module Legion
           def headers
             identity_headers.merge({
               'x-api-key' => config.anthropic_api_key,
-              'anthropic-version' => config.anthropic_version || settings[:api_version] || '2023-06-01'
+              'anthropic-version' => config.anthropic_version || settings[:api_version] || '2023-10-02'
             }.compact)
           end
 
@@ -78,19 +78,23 @@ module Legion
 
           private
 
-          def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:) # rubocop:disable Metrics/ParameterLists
+          def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:) # rubocop:disable Metrics/ParameterLists, Metrics/AbcSize
             log_render_payload(messages:, tools:, model:, stream:, schema:)
             system_messages, chat_messages = messages.partition { |message| message.role == :system }
 
+            caching = cache_enabled?
+            exclude_count = caching ? [cache_control_prefix_tokens, 1].max : 0
+            cacheable_count = caching ? [chat_messages.size - exclude_count, 0].max : 0
+
             {
               model: model.id,
-              messages: format_messages(chat_messages, thinking: thinking_enabled?(thinking)),
+              messages: format_messages(chat_messages, thinking: thinking_enabled?(thinking), cacheable_count:),
               stream: stream,
               max_tokens: model.max_tokens || settings[:default_max_tokens] || 4096,
-              system: system_content(system_messages),
+              system: system_content(system_messages, cache: caching),
               thinking: thinking_payload(thinking),
               temperature: temperature,
-              tools: format_tools(tools),
+              tools: format_tools(tools, cache: caching),
               tool_choice: tool_choice(tool_prefs),
               output_config: output_config(schema)
             }.compact
@@ -103,21 +107,24 @@ module Legion
             end
           end
 
-          def system_content(messages)
-            content = messages.flat_map { |message| content_blocks(message.content) }
+          def system_content(messages, cache: false)
+            content = messages.flat_map do |message|
+              content_blocks(message.content, cache:)
+            end
             content.empty? ? nil : content
           end
 
-          def format_messages(messages, thinking:)
-            messages.map do |message|
+          def format_messages(messages, thinking:, cacheable_count: 0)
+            messages.each_with_index.map do |message, index|
+              cache = index < cacheable_count
               if message.tool_call?
-                format_tool_call_message(message, thinking: thinking)
+                format_tool_call_message(message, thinking:, cache:)
               elsif message.tool_result?
-                format_tool_result_message(message)
+                format_tool_result_message(message, cache:)
               else
                 {
                   role: anthropic_role(message.role),
-                  content: content_blocks(message.content, thinking: thinking, message: message)
+                  content: content_blocks(message.content, thinking:, message:, cache:)
                 }
               end
             end
@@ -127,12 +134,12 @@ module Legion
             role == :assistant ? 'assistant' : 'user'
           end
 
-          def content_blocks(content, thinking: false, message: nil)
+          def content_blocks(content, thinking: false, message: nil, cache: false)
             raw_blocks = raw_content(content)
             return with_thinking(raw_blocks, message, thinking) if raw_blocks
 
             blocks = []
-            blocks << text_block(content_text(content)) unless content_text(content).to_s.empty?
+            blocks << text_block(content_text(content), cache:) unless content_text(content).to_s.empty?
             blocks.concat(attachment_blocks(content)) if content.respond_to?(:attachments)
             with_thinking(blocks, message, thinking)
           end
@@ -149,8 +156,10 @@ module Legion
             content.to_s
           end
 
-          def text_block(text)
-            { type: 'text', text: text }
+          def text_block(text, cache: false)
+            { type: 'text', text: text }.tap do |block|
+              block[:cache_control] = { type: 'ephemeral' } if cache
+            end
           end
 
           def attachment_blocks(content)
@@ -175,30 +184,34 @@ module Legion
             thinking_block ? [thinking_block, *blocks] : blocks
           end
 
-          def format_tool_call_message(message, thinking:)
-            blocks = content_blocks(message.content, thinking: thinking, message: message)
-            message.tool_calls.each_value { |tool_call| blocks << tool_use_block(tool_call) }
+          def format_tool_call_message(message, thinking:, cache:)
+            blocks = content_blocks(message.content, thinking:, message:, cache:)
+            message.tool_calls.each_value { |tool_call| blocks << tool_use_block(tool_call, cache:) }
             { role: 'assistant', content: blocks }
           end
 
-          def tool_use_block(tool_call)
+          def tool_use_block(tool_call, cache: false)
             {
               type: 'tool_use',
               id: tool_call.id,
               name: tool_call.name,
-              input: tool_call.arguments
-            }
+              input: tool_call.arguments,
+              cache_control: { type: 'ephemeral' }
+            }.tap do |block|
+              block.delete(:cache_control) unless cache
+            end
           end
 
-          def format_tool_result_message(message)
+          def format_tool_result_message(message, cache: false)
             {
               role: 'user',
               content: [
                 {
                   type: 'tool_result',
                   tool_use_id: message.tool_call_id,
-                  content: content_blocks(message.content)
-                }
+                  content: content_blocks(message.content, cache:),
+                  cache_control: { type: 'ephemeral' }
+                }.tap { |block| block.delete(:cache_control) unless cache }
               ]
             }
           end
@@ -234,16 +247,20 @@ module Legion
             end
           end
 
-          def format_tools(tools)
+          def format_tools(tools, cache: false)
             return nil if tools.empty?
 
-            tools.values.map do |tool|
+            tool_array = tools.values.map do |tool|
               {
                 name: tool.name,
                 description: tool.description,
                 input_schema: tool_schema(tool)
               }
             end
+
+            tool_array.last[:cache_control] = { type: 'ephemeral' } if cache && tool_array.any?
+
+            tool_array
           end
 
           def tool_schema(tool)
@@ -287,7 +304,7 @@ module Legion
             normalized = normalized.dup
             normalized.delete(:strict)
             normalized.delete('strict')
-            { format: { type: 'json_schema', schema: normalized } }
+            { format: { type: 'json', schema: normalized } }
           end
 
           def parse_completion_response(response)
@@ -355,18 +372,13 @@ module Legion
             )
           end
 
-          def extract_streaming_tool_calls(data, delta_type)
+          def extract_streaming_tool_calls(data, _delta_type)
             content_block = data['content_block']
-            if content_block && content_block['type'] == 'tool_use'
-              { content_block['id'] => Legion::Extensions::Llm::ToolCall.new(
-                id: content_block['id'], name: content_block['name'], arguments: ''
-              ) }
-            elsif delta_type == 'input_json_delta'
-              partial = data.dig('delta', 'partial_json')
-              return nil unless partial
+            return nil unless content_block && content_block['type'] == 'tool_use'
 
-              { nil => Legion::Extensions::Llm::ToolCall.new(id: nil, name: nil, arguments: partial) }
-            end
+            { content_block['id'] => Legion::Extensions::Llm::ToolCall.new(
+              id: content_block['id'], name: content_block['name'], arguments: ''
+            ) }
           end
 
           def parse_tool_calls(content_blocks)
@@ -403,6 +415,10 @@ module Legion
 
           def infer_context_window(model_id)
             CONTEXT_WINDOWS.find { |prefix, _| model_id.start_with?(prefix) }&.last
+          end
+
+          def model_detail(model_name)
+            fetch_model_detail(model_name)
           end
 
           def fetch_model_detail(model_name)
