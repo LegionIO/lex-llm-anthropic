@@ -46,7 +46,7 @@ module Legion
           def headers
             identity_headers.merge({
               'x-api-key' => config.anthropic_api_key,
-              'anthropic-version' => config.anthropic_version || settings[:api_version] || '2023-10-02'
+              'anthropic-version' => config.anthropic_version || settings[:api_version] || '2023-06-01'
             }.compact)
           end
 
