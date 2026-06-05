@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.15 - 2026-06-05
+
+- **Fix RuboCop cyclomatic complexity** — Extract `extract_hash_budget` helper to reduce `thinking_budget` cyclomatic complexity from 8 to 6, meeting the 7-line threshold.
+- **Add budget_tokens support** — `extract_hash_budget` now checks `:budget_tokens` and `'budget_tokens'` keys (Anthropic API canonical) in addition to legacy `:budget`/`'budget'`.
+- **Spec and RuboCop compliance** — All 28 specs passing, 0 RuboCop offenses.
+
+## 0.2.14 - 2026-06-05
+
+- **Fix RuboCop cyclomatic complexity** — Extract `extract_hash_budget` helper to reduce `thinking_budget` complexity from 8 to 6, meeting the 7-line threshold.
+- **Fix Style/IfUnlessModifier** — Split conditional return in `thinking_budget` to avoid modifier form exceeding max line length.
+
 ## 0.2.13 - 2026-06-02
 
 - **Fix invalid anthropic-version header** — Default `api_version` was `'2023-10-02'` (typo), which Anthropic rejects. Changed to `'2023-10-16'` (anthropic.rb)
