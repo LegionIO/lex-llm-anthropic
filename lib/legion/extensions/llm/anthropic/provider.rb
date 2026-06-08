@@ -231,10 +231,15 @@ module Legion
 
           def thinking_budget(thinking)
             return thinking if thinking.is_a?(Integer)
-            return thinking[:budget] || thinking['budget'] if thinking.is_a?(Hash)
+            return extract_hash_budget(thinking) if thinking.is_a?(Hash)
             return thinking.budget if thinking.respond_to?(:budget) && thinking.budget
 
             1024
+          end
+
+          # Anthropic API uses :budget_tokens, but legacy config may use :budget
+          def extract_hash_budget(thinking)
+            thinking[:budget_tokens] || thinking['budget_tokens'] || thinking[:budget] || thinking['budget']
           end
 
           def thinking_block(thinking)
