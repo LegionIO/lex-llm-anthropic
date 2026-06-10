@@ -14,12 +14,12 @@ module Legion
 
             def handle_fleet_request(payload, delivery: nil, properties: nil)
               Legion::Extensions::Llm::Fleet::ProviderResponder.call(
-                payload: payload,
-                provider_family: Anthropic::PROVIDER_FAMILY,
-                provider_class: Anthropic::Provider,
+                payload:            payload,
+                provider_family:    Anthropic::PROVIDER_FAMILY,
+                provider_class:     Anthropic::Provider,
                 provider_instances: -> { Anthropic.discover_instances },
-                delivery: delivery,
-                properties: properties
+                delivery:           delivery,
+                properties:         properties
               )
             end
           end

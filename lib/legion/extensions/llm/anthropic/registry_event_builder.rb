@@ -13,8 +13,8 @@ module Legion
           def model_available(model, readiness:)
             registry_event_class.available(
               model_offering(model),
-              runtime: runtime_metadata,
-              health: model_health(readiness),
+              runtime:  runtime_metadata,
+              health:   model_health(readiness),
               metadata: model_metadata(model)
             )
           end
@@ -23,14 +23,14 @@ module Legion
 
           def model_offering(model)
             {
-              provider_family: :anthropic,
+              provider_family:   :anthropic,
               provider_instance: provider_instance,
-              transport: :http,
-              model: model.id,
-              usage_type: :inference,
-              capabilities: Array(model.capabilities).map(&:to_sym),
-              limits: model_limits(model),
-              metadata: { lex: :llm_anthropic, model_name: model.name }.compact
+              transport:         :http,
+              model:             model.id,
+              usage_type:        :inference,
+              capabilities:      Array(model.capabilities).map(&:to_sym),
+              limits:            model_limits(model),
+              metadata:          { lex: :llm_anthropic, model_name: model.name }.compact
             }
           end
 
@@ -49,7 +49,7 @@ module Legion
 
           def model_limits(model)
             {
-              context_window: model.context_window,
+              context_window:    model.context_window,
               max_output_tokens: model.max_output_tokens
             }.compact
           end

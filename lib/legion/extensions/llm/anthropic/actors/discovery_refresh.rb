@@ -13,7 +13,7 @@ module Legion
     module Llm
       module Anthropic
         module Actor
-          class DiscoveryRefresh < Legion::Extensions::Actors::Every # rubocop:disable Style/Documentation
+          class DiscoveryRefresh < Legion::Extensions::Actors::Every
             include Legion::Logging::Helper
 
             REFRESH_INTERVAL = 1800

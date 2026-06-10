@@ -13,7 +13,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Runners::FleetWorker do
   let(:properties) { instance_double(FleetWorkerSpecProperties) }
   let(:instances) { { local: { fleet: { respond_to_requests: true } } } }
 
-  it 'delegates fleet execution to the shared lex-llm responder helper' do # rubocop:disable RSpec/ExampleLength
+  it 'delegates fleet execution to the shared lex-llm responder helper' do
     allow(Legion::Extensions::Llm::Anthropic).to receive(:discover_instances).and_return(instances)
     allow(Legion::Extensions::Llm::Fleet::ProviderResponder).to receive(:call).and_return(:ok)
 
@@ -21,12 +21,12 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Runners::FleetWorker do
 
     expect(result).to eq(:ok)
     expect(Legion::Extensions::Llm::Fleet::ProviderResponder).to have_received(:call).with(
-      payload: payload,
-      provider_family: :anthropic,
-      provider_class: Legion::Extensions::Llm::Anthropic::Provider,
+      payload:            payload,
+      provider_family:    :anthropic,
+      provider_class:     Legion::Extensions::Llm::Anthropic::Provider,
       provider_instances: satisfy { |resolver| resolver.call == instances },
-      delivery: delivery,
-      properties: properties
+      delivery:           delivery,
+      properties:         properties
     )
   end
 end
