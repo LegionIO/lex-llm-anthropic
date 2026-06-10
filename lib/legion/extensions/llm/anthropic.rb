@@ -11,7 +11,7 @@ module Legion
   module Extensions
     module Llm
       # Anthropic provider extension namespace.
-      module Anthropic # rubocop:disable Metrics/ModuleLength
+      module Anthropic
         extend ::Legion::Extensions::Core if ::Legion::Extensions.const_defined?(:Core, false)
         extend Legion::Logging::Helper
         extend Legion::Extensions::Llm::AutoRegistration
@@ -20,24 +20,24 @@ module Legion
 
         def self.default_settings
           ::Legion::Extensions::Llm.provider_settings(
-            family: PROVIDER_FAMILY,
+            family:   PROVIDER_FAMILY,
             instance: {
-              default_model: 'claude-sonnet-4-6',
-              endpoint: 'https://api.anthropic.com',
-              api_version: '2023-10-16',
+              default_model:      'claude-sonnet-4-6',
+              endpoint:           'https://api.anthropic.com',
+              api_version:        '2023-10-16',
               default_max_tokens: 4096,
-              tier: :frontier,
-              transport: :http,
-              credentials: { api_key: 'env://ANTHROPIC_API_KEY' },
-              usage: { inference: true, embedding: false, image: false },
-              limits: { concurrency: 4 },
-              fleet: {
-                enabled: false,
+              tier:               :frontier,
+              transport:          :http,
+              credentials:        { api_key: 'env://ANTHROPIC_API_KEY' },
+              usage:              { inference: true, embedding: false, image: false },
+              limits:             { concurrency: 4 },
+              fleet:              {
+                enabled:             false,
                 respond_to_requests: false,
-                capabilities: %i[chat stream_chat],
-                lanes: [],
-                concurrency: 4,
-                queue_suffix: nil
+                capabilities:        %i[chat stream_chat],
+                lanes:               [],
+                concurrency:         4,
+                queue_suffix:        nil
               }
             }
           )
@@ -51,16 +51,16 @@ module Legion
           []
         end
 
-        def self.discover_instances # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
+        def self.discover_instances
           candidates = {}
 
           env_key = CredentialSources.env('ANTHROPIC_API_KEY')
           if env_key
             candidates[:env] = {
-              api_key: env_key,
-              anthropic_api_key: env_key,
-              tier: :frontier,
-              source: CredentialSources.source_tag(:env, 'ANTHROPIC_API_KEY'),
+              api_key:                env_key,
+              anthropic_api_key:      env_key,
+              tier:                   :frontier,
+              source:                 CredentialSources.source_tag(:env, 'ANTHROPIC_API_KEY'),
               credential_fingerprint: CredentialSources.credential_fingerprint(env_key)
             }
           end
@@ -68,10 +68,10 @@ module Legion
           claude_key = CredentialSources.claude_config_value(:anthropicApiKey)
           if claude_key
             candidates[:claude] = {
-              api_key: claude_key,
-              anthropic_api_key: claude_key,
-              tier: :frontier,
-              source: CredentialSources.source_tag(:file, '~/.claude/settings.json', 'anthropicApiKey'),
+              api_key:                claude_key,
+              anthropic_api_key:      claude_key,
+              tier:                   :frontier,
+              source:                 CredentialSources.source_tag(:file, '~/.claude/settings.json', 'anthropicApiKey'),
               credential_fingerprint: CredentialSources.credential_fingerprint(claude_key)
             }
           end
@@ -81,10 +81,10 @@ module Legion
             settings_key = settings_config[:api_key] || settings_config['api_key']
             if settings_key
               candidates[:settings] = normalize_instance_config(settings_config).merge(
-                api_key: settings_key,
-                anthropic_api_key: settings_key,
-                tier: :frontier,
-                source: CredentialSources.source_tag(:settings, 'extensions.llm.anthropic'),
+                api_key:                settings_key,
+                anthropic_api_key:      settings_key,
+                tier:                   :frontier,
+                source:                 CredentialSources.source_tag(:settings, 'extensions.llm.anthropic'),
                 credential_fingerprint: CredentialSources.credential_fingerprint(settings_key)
               )
             end
@@ -108,10 +108,10 @@ module Legion
             broker_cred = Legion::Identity::Broker.credential_for(:anthropic)
             if broker_cred
               candidates[:broker] = {
-                api_key: broker_cred,
-                anthropic_api_key: broker_cred,
-                tier: :frontier,
-                source: CredentialSources.source_tag(:broker, 'identity', 'anthropic'),
+                api_key:                broker_cred,
+                anthropic_api_key:      broker_cred,
+                tier:                   :frontier,
+                source:                 CredentialSources.source_tag(:broker, 'identity', 'anthropic'),
                 credential_fingerprint: CredentialSources.credential_fingerprint(broker_cred)
               }
             end
@@ -130,7 +130,7 @@ module Legion
           instances.is_a?(Hash) ? instances : {}
         end
 
-        def self.normalize_instance_config(config) # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity
+        def self.normalize_instance_config(config)
           normalized = config.to_h.transform_keys { |key| key.respond_to?(:to_sym) ? key.to_sym : key }
           normalized[:anthropic_api_key] ||= normalized.delete(:api_key)
           normalized[:anthropic_api_base] ||= normalized.delete(:base_url)

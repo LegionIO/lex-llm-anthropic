@@ -30,7 +30,7 @@ module Legion
                 @options[:app_id] || RegistryPublisher::APP_ID
               end
 
-              def persistent # rubocop:disable Naming/PredicateMethod
+              def persistent
                 false
               end
             end

@@ -8,7 +8,7 @@ module Legion
     module Llm
       module Anthropic
         # Anthropic Messages API provider implementation for the Legion::Extensions::Llm contract.
-        class Provider < Legion::Extensions::Llm::Provider # rubocop:disable Metrics/ClassLength
+        class Provider < Legion::Extensions::Llm::Provider
           include Legion::Logging::Helper
 
           class << self
@@ -45,7 +45,7 @@ module Legion
 
           def headers
             identity_headers.merge({
-              'x-api-key' => config.anthropic_api_key,
+              'x-api-key'         => config.anthropic_api_key,
               'anthropic-version' => config.anthropic_version || settings[:api_version] || '2023-06-01'
             }.compact)
           end
@@ -67,18 +67,18 @@ module Legion
           end
 
           CONTEXT_WINDOWS = {
-            'claude-opus-4' => 200_000,
+            'claude-opus-4'   => 200_000,
             'claude-sonnet-4' => 200_000,
-            'claude-haiku-4' => 200_000,
-            'claude-3-5' => 200_000,
-            'claude-3-opus' => 200_000,
+            'claude-haiku-4'  => 200_000,
+            'claude-3-5'      => 200_000,
+            'claude-3-opus'   => 200_000,
             'claude-3-sonnet' => 200_000,
-            'claude-3-haiku' => 200_000
+            'claude-3-haiku'  => 200_000
           }.freeze
 
           private
 
-          def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:) # rubocop:disable Metrics/ParameterLists, Metrics/AbcSize
+          def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:)
             log_render_payload(messages:, tools:, model:, stream:, schema:)
             system_messages, chat_messages = messages.partition { |message| message.role == :system }
 
@@ -87,15 +87,15 @@ module Legion
             cacheable_count = caching ? [chat_messages.size - exclude_count, 0].max : 0
 
             {
-              model: model.id,
-              messages: format_messages(chat_messages, thinking: thinking_enabled?(thinking), cacheable_count:),
-              stream: stream,
-              max_tokens: model.max_tokens || settings[:default_max_tokens] || 4096,
-              system: system_content(system_messages, cache: caching),
-              thinking: thinking_payload(thinking),
-              temperature: temperature,
-              tools: format_tools(tools, cache: caching),
-              tool_choice: tool_choice(tool_prefs),
+              model:         model.id,
+              messages:      format_messages(chat_messages, thinking: thinking_enabled?(thinking), cacheable_count:),
+              stream:        stream,
+              max_tokens:    model.max_tokens || settings[:default_max_tokens] || 4096,
+              system:        system_content(system_messages, cache: caching),
+              thinking:      thinking_payload(thinking),
+              temperature:   temperature,
+              tools:         format_tools(tools, cache: caching),
+              tool_choice:   tool_choice(tool_prefs),
               output_config: output_config(schema)
             }.compact
           end
@@ -123,7 +123,7 @@ module Legion
                 format_tool_result_message(message, cache:)
               else
                 {
-                  role: anthropic_role(message.role),
+                  role:    anthropic_role(message.role),
                   content: content_blocks(message.content, thinking:, message:, cache:)
                 }
               end
@@ -167,11 +167,11 @@ module Legion
               next unless attachment.image?
 
               {
-                type: 'image',
+                type:   'image',
                 source: {
-                  type: 'base64',
+                  type:       'base64',
                   media_type: attachment.mime_type,
-                  data: attachment.encoded
+                  data:       attachment.encoded
                 }
               }
             end
@@ -192,10 +192,10 @@ module Legion
 
           def tool_use_block(tool_call, cache: false)
             {
-              type: 'tool_use',
-              id: tool_call.id,
-              name: tool_call.name,
-              input: tool_call.arguments,
+              type:          'tool_use',
+              id:            tool_call.id,
+              name:          tool_call.name,
+              input:         tool_call.arguments,
               cache_control: { type: 'ephemeral' }
             }.tap do |block|
               block.delete(:cache_control) unless cache
@@ -204,12 +204,12 @@ module Legion
 
           def format_tool_result_message(message, cache: false)
             {
-              role: 'user',
+              role:    'user',
               content: [
                 {
-                  type: 'tool_result',
-                  tool_use_id: message.tool_call_id,
-                  content: content_blocks(message.content, cache:),
+                  type:          'tool_result',
+                  tool_use_id:   message.tool_call_id,
+                  content:       content_blocks(message.content, cache:),
                   cache_control: { type: 'ephemeral' }
                 }.tap { |block| block.delete(:cache_control) unless cache }
               ]
@@ -256,9 +256,12 @@ module Legion
             return nil if tools.empty?
 
             tool_array = tools.values.map do |tool|
+              # Tools can be ToolDefinition objects or plain Hashes from native_dispatch.
+              tool_name = tool.respond_to?(:name) ? tool.name : (tool[:name] || tool['name'])
+              tool_desc = tool.respond_to?(:description) ? tool.description : (tool[:description] || tool['description'] || '')
               {
-                name: tool.name,
-                description: tool.description,
+                name:         tool_name,
+                description:  tool_desc,
                 input_schema: tool_schema(tool)
               }
             end
@@ -271,7 +274,8 @@ module Legion
           def tool_schema(tool)
             return tool.params_schema if tool.respond_to?(:params_schema) && tool.params_schema
 
-            { type: 'object', properties: {}, required: [] }
+            { type: 'object',
+              properties: tool.respond_to?(:parameters) ? tool.parameters : (tool[:parameters] || tool['parameters'] || {}), required: [] }
           end
 
           def tool_choice(tool_prefs)
@@ -318,17 +322,17 @@ module Legion
             usage = body['usage'] || {}
 
             Legion::Extensions::Llm::Message.new(
-              role: :assistant,
-              content: text_from(content_blocks),
-              model_id: body['model'],
-              thinking: thinking_from(content_blocks),
-              tool_calls: parse_tool_calls(content_blocks),
-              input_tokens: usage['input_tokens'],
-              output_tokens: usage['output_tokens'],
-              cached_tokens: usage['cache_read_input_tokens'],
+              role:                  :assistant,
+              content:               text_from(content_blocks),
+              model_id:              body['model'],
+              thinking:              thinking_from(content_blocks),
+              tool_calls:            parse_tool_calls(content_blocks),
+              input_tokens:          usage['input_tokens'],
+              output_tokens:         usage['output_tokens'],
+              cached_tokens:         usage['cache_read_input_tokens'],
               cache_creation_tokens: cache_creation_tokens(usage),
-              thinking_tokens: thinking_tokens(usage),
-              raw: body
+              thinking_tokens:       thinking_tokens(usage),
+              raw:                   body
             )
           end
 
@@ -341,7 +345,7 @@ module Legion
             redacted_block = blocks.find { |block| block['type'] == 'redacted_thinking' }
 
             Legion::Extensions::Llm::Thinking.build(
-              text: thinking_block&.dig('thinking') || thinking_block&.dig('text'),
+              text:      thinking_block&.dig('thinking') || thinking_block&.dig('text'),
               signature: thinking_block&.dig('signature') || redacted_block&.dig('data')
             )
           end
@@ -364,16 +368,16 @@ module Legion
             delta_type = data.dig('delta', 'type')
 
             Legion::Extensions::Llm::Chunk.new(
-              role: :assistant,
-              content: delta_type == 'text_delta' ? data.dig('delta', 'text') : nil,
-              model_id: data.dig('message', 'model'),
-              thinking: Legion::Extensions::Llm::Thinking.build(
-                text: delta_type == 'thinking_delta' ? data.dig('delta', 'thinking') : nil,
+              role:          :assistant,
+              content:       delta_type == 'text_delta' ? data.dig('delta', 'text') : nil,
+              model_id:      data.dig('message', 'model'),
+              thinking:      Legion::Extensions::Llm::Thinking.build(
+                text:      delta_type == 'thinking_delta' ? data.dig('delta', 'thinking') : nil,
                 signature: delta_type == 'signature_delta' ? data.dig('delta', 'signature') : nil
               ),
-              input_tokens: data.dig('message', 'usage', 'input_tokens'),
+              input_tokens:  data.dig('message', 'usage', 'input_tokens'),
               output_tokens: data.dig('message', 'usage', 'output_tokens') || data.dig('usage', 'output_tokens'),
-              tool_calls: extract_streaming_tool_calls(data, delta_type)
+              tool_calls:    extract_streaming_tool_calls(data, delta_type)
             )
           end
 
@@ -394,8 +398,8 @@ module Legion
               [
                 block['id'],
                 Legion::Extensions::Llm::ToolCall.new(
-                  id: block['id'],
-                  name: block['name'],
+                  id:        block['id'],
+                  name:      block['name'],
                   arguments: block['input'] || {}
                 )
               ]
@@ -408,12 +412,12 @@ module Legion
               detail = model_detail(model_id)
               ctx = detail&.dig(:context_window) || infer_context_window(model_id)
               Legion::Extensions::Llm::Model::Info.new(
-                id: model_id,
-                name: model['display_name'] || model_id,
-                provider: provider,
-                capabilities: %i[completion streaming tools],
+                id:             model_id,
+                name:           model['display_name'] || model_id,
+                provider:       provider,
+                capabilities:   %i[completion streaming tools],
                 context_length: ctx,
-                metadata: model.merge('created_at' => model['created_at']).compact
+                metadata:       model.merge('created_at' => model['created_at']).compact
               )
             end
           end

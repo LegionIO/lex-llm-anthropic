@@ -11,15 +11,15 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   end
   let(:registry_publisher) { instance_double(described_class::RegistryPublisher) }
 
-  it 'exposes provider defaults with inherited fleet settings' do # rubocop:disable RSpec/ExampleLength
+  it 'exposes provider defaults with inherited fleet settings' do
     settings = described_class.default_settings
 
     expect(settings[:provider_family]).to eq(:anthropic)
     expect(settings.dig(:fleet, :consumer, :enabled)).to be false
     expect(settings.dig(:instances, :default)).to include(
       endpoint: 'https://api.anthropic.com',
-      fleet: hash_including(respond_to_requests: false),
-      usage: hash_including(embedding: false)
+      fleet:    hash_including(respond_to_requests: false),
+      usage:    hash_including(embedding: false)
     )
   end
 
@@ -116,8 +116,8 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
   def lookup_tool_definition
     {
-      name: 'lookup',
-      description: 'look up a value',
+      name:         'lookup',
+      description:  'look up a value',
       input_schema: { type: 'object', properties: {} }
     }
   end
@@ -150,8 +150,8 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
   def expected_model_listing
     {
-      id: 'claude-opus-4-1-20250805',
-      name: 'Claude Opus 4.1',
+      id:       'claude-opus-4-1-20250805',
+      name:     'Claude Opus 4.1',
       provider: :anthropic
     }
   end
@@ -162,13 +162,13 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
   def completion_body
     {
-      'model' => 'claude-sonnet-4-5-20250929',
+      'model'   => 'claude-sonnet-4-5-20250929',
       'content' => [
         { 'type' => 'thinking', 'thinking' => 'reasoned', 'signature' => 'sig-1' },
         { 'type' => 'text', 'text' => 'done' },
         { 'type' => 'tool_use', 'id' => 'toolu_1', 'name' => 'lookup', 'input' => { 'id' => 1 } }
       ],
-      'usage' => { 'input_tokens' => 11, 'output_tokens' => 7 }
+      'usage'   => { 'input_tokens' => 11, 'output_tokens' => 7 }
     }
   end
 
@@ -176,9 +176,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     {
       'data' => [
         {
-          'id' => 'claude-opus-4-1-20250805',
+          'id'           => 'claude-opus-4-1-20250805',
           'display_name' => 'Claude Opus 4.1',
-          'created_at' => '2025-08-05T00:00:00Z'
+          'created_at'   => '2025-08-05T00:00:00Z'
         }
       ]
     }
