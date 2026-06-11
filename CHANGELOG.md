@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.17 - 2026-06-10
+
+- **Canonical provider translator (Phase 3)** — New `Translator` class implementing the Anthropic↔canonical boundary per N×N routing design. Public interface: `render_request(canonical_request)`, `parse_response(wire)`, `parse_chunk(raw)`, `capabilities`. Extracted from existing `Provider` render/parse methods — behaviour preserved, not rewritten (translator.rb).
+- **Anthropic capability declarations** — `thinking: :signature_lifecycle`, `assistant_prefill: true`, `tool_calls: :native`, `system_content_blocks: true`, `supported_params` explicitly listed.
+- **G18 param mapping** — max_tokens, temperature, stop_sequences, seed, response_format rendered to Anthropic wire format. max_thinking_tokens → thinking.budget_tokens. top_p, top_k, frequency_penalty, presence_penalty dropped with debug log (Anthropic doesn't support).
+- **stop_reason mapping** — Maps 1:1 with canonical enums: end_turn, tool_use, max_tokens, stop_sequence, content_filter. Unmapped values default to end_turn with debug log.
+- **Thinking/signature lifecycle** — Parsing handles both canonical-form (delta as string) and Anthropic wire-form (delta as nested {text, thinking, signature} object). Supports thinking_content, redacted_thinking, signature_delta lifecycle per R4.
+- **Usage parsing** — input/output tokens, cache_read_input_tokens → cache_read_tokens, cache_creation_input_tokens → cache_write_tokens, thinking_tokens output_tokens_details.reasoning_tokens fallback chain.
+- **Conformance kit integration** — spec_helper loads `it_behaves_like('a canonical provider translator')` and `it_behaves_like('a canonical client translator')` shared examples from lex-llm gem spec directory per B1b consumer pattern.
+- **Lex-llm dependency bumped to >= 0.5.0** — Requires canonical types (B1a) and conformance kit (B1b) shipped in lex-llm 0.5.0 (gemspec).
+- **Rules** — No bare `::JSON` (Legion::JSON.load with ParseError rescue), no `_foo:` kwargs, no `**_rest`, all tunable defaults in config. 135 examples, 0 failures; 20 files, 0 rubocop offenses.
+
 ## 0.2.16 - 2026-06-10
 
 - **Hash-backed tool support** — `format_tools` and `tool_schema` now handle both `ToolDefinition` objects and plain Hashes from `native_dispatch` via `respond_to?` checks with symbol/string key fallbacks. Prevents `NoMethodError` when tools arrive as hash-backed definitions (provider.rb).
