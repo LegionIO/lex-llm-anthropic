@@ -5,6 +5,7 @@ require 'legion/logging/helper'
 require 'legion/extensions/llm/anthropic/registry_event_builder'
 require 'legion/extensions/llm/anthropic/registry_publisher'
 require 'legion/extensions/llm/anthropic/provider'
+require 'legion/extensions/llm/anthropic/translator'
 require 'legion/extensions/llm/anthropic/version'
 
 module Legion
