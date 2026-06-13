@@ -2,12 +2,7 @@
 
 source 'https://rubygems.org'
 
-transport_path = ENV.fetch('LEGION_TRANSPORT_PATH', File.expand_path('../../legion-transport', __dir__))
-gem 'legion-transport', path: transport_path if File.directory?(transport_path)
-
 gemspec
-
-gem 'lex-llm', path: ENV.fetch('LEX_LLM_PATH', '../lex-llm')
 
 group :development do
   gem 'bundler', '>= 2.0'
