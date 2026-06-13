@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.18 - 2026-06-13
+
+- **Gemfile cleanup** — Remove local path overrides; all dependencies resolve from gemspec via rubygems.
+- 135 examples, 0 failures; 20 files, 0 rubocop offenses.
+
 ## 0.2.17 - 2026-06-10
 
 - **Canonical provider translator (Phase 3)** — New `Translator` class implementing the Anthropic↔canonical boundary per N×N routing design. Public interface: `render_request(canonical_request)`, `parse_response(wire)`, `parse_chunk(raw)`, `capabilities`. Extracted from existing `Provider` render/parse methods — behaviour preserved, not rewritten (translator.rb).
