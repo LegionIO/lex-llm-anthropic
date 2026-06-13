@@ -308,12 +308,12 @@ module Legion
               name = tool.is_a?(Canonical::ToolDefinition) ? tool.name : (tool[:name] || tool['name'])
               desc = tool.is_a?(Canonical::ToolDefinition) ? tool.description : (tool[:description] || tool['description'] || '')
               params = if tool.is_a?(Canonical::ToolDefinition)
-                         tool.parameters || {}
+                         tool.parameters
                        else
-                         tool[:parameters] || tool['parameters'] || {}
+                         Canonical::ToolDefinition.normalize_parameters(tool[:parameters] || tool['parameters'])
                        end
 
-              { name: name, description: desc, input_schema: { type: 'object', properties: params } }
+              { name: name, description: desc, input_schema: params }
             end
           end
 

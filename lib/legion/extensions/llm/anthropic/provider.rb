@@ -278,8 +278,8 @@ module Legion
           def tool_schema(tool)
             return tool.params_schema if tool.respond_to?(:params_schema) && tool.params_schema
 
-            { type: 'object',
-              properties: tool.respond_to?(:parameters) ? tool.parameters : (tool[:parameters] || tool['parameters'] || {}), required: [] }
+            raw = tool.respond_to?(:parameters) ? tool.parameters : (tool[:parameters] || tool['parameters'])
+            Legion::Extensions::Llm::Canonical::ToolDefinition.normalize_parameters(raw)
           end
 
           def tool_choice(tool_prefs)

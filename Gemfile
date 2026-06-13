@@ -7,6 +7,8 @@ gem 'legion-transport', path: transport_path if File.directory?(transport_path)
 
 gemspec
 
+gem 'lex-llm', path: ENV.fetch('LEX_LLM_PATH', '../lex-llm')
+
 group :development do
   gem 'bundler', '>= 2.0'
   gem 'rake', '>= 13.0'
