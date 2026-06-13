@@ -233,43 +233,48 @@ module Legion
           end
 
           def content_block_to_wire(block)
-            case block.type
-            when :thinking
-              { type: 'thinking', thinking: block.text || '' }
-            when :tool_use
-              { type: 'tool_use', id: block.id, name: block.name, input: block.input || {} }
-            when :tool_result
-              { type: 'tool_result', tool_use_id: block.tool_use_id,
-                content: [{ type: 'text', text: block.text || '' }] }
-            when :image
-              { type: 'image', source: { type: block.source_type || 'base64',
-                                         media_type: block.media_type, data: block.data } }
-            else
-              { type: 'text', text: block.text || '' }
-            end
+            wire = case block.type
+                   when :thinking
+                     { type: 'thinking', thinking: block.text || '' }
+                   when :tool_use
+                     { type: 'tool_use', id: block.id, name: block.name, input: block.input || {} }
+                   when :tool_result
+                     { type: 'tool_result', tool_use_id: block.tool_use_id,
+                       content: [{ type: 'text', text: block.text || '' }] }
+                   when :image
+                     { type: 'image', source: { type: block.source_type || 'base64',
+                                                media_type: block.media_type, data: block.data } }
+                   else
+                     { type: 'text', text: block.text || '' }
+                   end
+            wire[:cache_control] = block.cache_control if block.cache_control
+            wire
           end
 
           def hash_block_to_wire(block)
             block_type = block[:type] || block['type']
+            cc = block[:cache_control] || block['cache_control']
 
-            case block_type
-            when 'image'
-              { type: 'image', source: block[:source] || block['source'] || {} }
-            when 'tool_result'
-              {
-                type:        'tool_result',
-                tool_use_id: block[:tool_use_id] || block['tool_use_id'],
-                content:     Array(block[:content] || block['content']).map do |item|
-                  if item.is_a?(Hash)
-                    { type: 'text', text: item[:text] || item['text'] || '' }
-                  else
-                    { type: 'text', text: item.to_s }
-                  end
-                end
-              }
-            else
-              block
-            end
+            wire = case block_type
+                   when 'image'
+                     { type: 'image', source: block[:source] || block['source'] || {} }
+                   when 'tool_result'
+                     {
+                       type:        'tool_result',
+                       tool_use_id: block[:tool_use_id] || block['tool_use_id'],
+                       content:     Array(block[:content] || block['content']).map do |item|
+                         if item.is_a?(Hash)
+                           { type: 'text', text: item[:text] || item['text'] || '' }
+                         else
+                           { type: 'text', text: item.to_s }
+                         end
+                       end
+                     }
+                   else
+                     return block
+                   end
+            wire[:cache_control] = cc if cc
+            wire
           end
 
           # --- system content ---
@@ -303,12 +308,12 @@ module Legion
               name = tool.is_a?(Canonical::ToolDefinition) ? tool.name : (tool[:name] || tool['name'])
               desc = tool.is_a?(Canonical::ToolDefinition) ? tool.description : (tool[:description] || tool['description'] || '')
               params = if tool.is_a?(Canonical::ToolDefinition)
-                         tool.parameters || {}
+                         tool.parameters
                        else
-                         tool[:parameters] || tool['parameters'] || {}
+                         Canonical::ToolDefinition.normalize_parameters(tool[:parameters] || tool['parameters'])
                        end
 
-              { name: name, description: desc, input_schema: { type: 'object', properties: params } }
+              { name: name, description: desc, input_schema: params }
             end
           end
 

@@ -186,7 +186,11 @@ module Legion
 
           def format_tool_call_message(message, thinking:, cache:)
             blocks = content_blocks(message.content, thinking:, message:, cache:)
-            message.tool_calls.each_value { |tool_call| blocks << tool_use_block(tool_call, cache:) }
+            # tool_calls is an Array of ToolCall since the adapter stopped
+            # name-keying them (name-keyed hashes silently dropped parallel
+            # same-name calls); tolerate the legacy Hash shape from old callers.
+            calls = message.tool_calls.is_a?(Hash) ? message.tool_calls.values : Array(message.tool_calls)
+            calls.each { |tool_call| blocks << tool_use_block(tool_call, cache:) }
             { role: 'assistant', content: blocks }
           end
 
@@ -274,8 +278,8 @@ module Legion
           def tool_schema(tool)
             return tool.params_schema if tool.respond_to?(:params_schema) && tool.params_schema
 
-            { type: 'object',
-              properties: tool.respond_to?(:parameters) ? tool.parameters : (tool[:parameters] || tool['parameters'] || {}), required: [] }
+            raw = tool.respond_to?(:parameters) ? tool.parameters : (tool[:parameters] || tool['parameters'])
+            Legion::Extensions::Llm::Canonical::ToolDefinition.normalize_parameters(raw)
           end
 
           def tool_choice(tool_prefs)
