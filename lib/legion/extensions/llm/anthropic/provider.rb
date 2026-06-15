@@ -80,6 +80,8 @@ module Legion
             'claude-3-haiku'  => 200_000
           }.freeze
 
+          COMPLETION_BASE = [:completion].freeze
+
           private
 
           def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:)
@@ -405,15 +407,41 @@ module Legion
               model_id = model.fetch('id')
               detail = model_detail(model_id)
               ctx = detail&.dig(:context_window) || infer_context_window(model_id)
+              resolved = resolve_model_capabilities(model_id)
               Legion::Extensions::Llm::Model::Info.new(
                 id:             model_id,
                 name:           model['display_name'] || model_id,
                 provider:       provider,
-                capabilities:   %i[completion streaming tools],
+                capabilities:   COMPLETION_BASE + resolved[:capabilities],
                 context_length: ctx,
                 metadata:       model.merge('created_at' => model['created_at']).compact
               )
             end
+          end
+
+          def resolve_model_capabilities(model_id)
+            provider_settings = CredentialSources.setting(:extensions, :llm, :anthropic)
+            provider_cfg = provider_settings.is_a?(Hash) ? provider_settings.except(:instances) : {}
+            model_cfg = model_config_for(model_id, provider_settings)
+
+            Legion::Extensions::Llm::CapabilityPolicy.resolve(
+              real:              {},
+              provider_catalog:  {},
+              probe:             {},
+              provider_envelope: { streaming: true, tools: true },
+              provider_config:   provider_cfg,
+              instance_config:   config.respond_to?(:to_h) ? config.to_h : {},
+              model_config:      model_cfg
+            )
+          end
+
+          def model_config_for(model_id, provider_settings)
+            return {} unless provider_settings.is_a?(Hash)
+
+            models = provider_settings[:models] || provider_settings['models']
+            return {} unless models.is_a?(Hash)
+
+            models[model_id.to_sym] || models[model_id] || {}
           end
 
           def infer_context_window(model_id)

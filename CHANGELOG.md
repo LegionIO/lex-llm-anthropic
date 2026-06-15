@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.19 - 2026-06-15
+
+- **CapabilityPolicy integration** — Streaming and tools from `:provider_envelope`; vision/thinking default false unless explicitly enabled via settings. Settings overrides at provider/instance/model level supported.
+
 ## 0.2.18 - 2026-06-13
 
 - **Gemfile cleanup** — Remove local path overrides; all dependencies resolve from gemspec via rubygems.
