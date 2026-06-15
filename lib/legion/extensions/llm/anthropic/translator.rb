@@ -106,54 +106,68 @@ module Legion
             )
           end
 
-          # Parse chunk: raw streaming event to Canonical::Chunk.
+          # Parse chunk: raw Anthropic SSE event to Canonical::Chunk.
+          # Real Anthropic events use top-level types like content_block_delta, message_delta,
+          # content_block_start; the delta kind is nested inside delta.type.
           def parse_chunk(raw)
             return nil unless raw.is_a?(Hash) && (raw.key?(:type) || raw.key?('type'))
 
-            type = raw[:type] || raw['type']
+            type = (raw[:type] || raw['type']).to_s
+            delta = raw[:delta] || raw['delta'] || {}
+            delta = {} unless delta.is_a?(Hash)
+            delta_type = (delta[:type] || delta['type']).to_s
 
             case type
-            when 'text_delta', :text_delta
+            when 'content_block_delta'
+              parse_content_block_delta(raw, delta, delta_type)
+            when 'content_block_start'
+              parse_content_block_start(raw)
+            when 'message_start'
+              parse_message_start(raw)
+            when 'message_delta'
+              parse_message_delta(raw, delta)
+            when 'message_stop'
+              Canonical::Chunk.done(
+                request_id:  raw[:request_id] || '',
+                stop_reason: map_stop_reason(delta[:stop_reason] || delta['stop_reason'])
+              )
+            when 'text_delta'
               Canonical::Chunk.text_delta(
                 delta:       extract_delta(raw, 'text_delta'),
                 request_id:  raw[:request_id],
-                block_index: raw[:block_index]
+                block_index: raw[:block_index] || raw['index']
               )
-            when 'thinking_delta', :thinking_delta
-              delta_obj = raw[:delta] || raw['delta']
-              sig_from_delta = (delta_obj[:signature] || delta_obj['signature'] if delta_obj.is_a?(Hash))
-
+            when 'thinking_delta'
+              sig_from_delta = (delta[:signature] || delta['signature'] if delta.any?)
               Canonical::Chunk.thinking_delta(
                 delta:       extract_delta(raw, 'thinking_delta'),
                 request_id:  raw[:request_id],
-                block_index: raw[:block_index],
+                block_index: raw[:block_index] || raw['index'],
                 signature:   raw[:signature] || raw['signature'] || sig_from_delta
               )
-            when 'tool_call_delta', :tool_call_delta
+            when 'tool_call_delta'
               tc = extract_tool_call_from_chunk(raw)
               return nil unless tc
 
               Canonical::Chunk.tool_call_delta(
                 tool_call:   tc,
                 request_id:  raw[:request_id],
-                block_index: raw[:block_index]
+                block_index: raw[:block_index] || raw['index']
               )
-            when 'error', :error
+            when 'error'
               Canonical::Chunk.error_chunk(
                 error:      raw[:error] || raw['error'] || 'unknown',
                 request_id: raw[:request_id] || '',
                 metadata:   raw[:metadata] || raw['metadata'] || {}
               )
-            when 'done', :done
+            when 'done'
               usage = (Canonical::Usage.from_hash(raw[:usage] || raw['usage'] || {}) if raw[:usage] || raw['usage'])
-
               Canonical::Chunk.done(
                 request_id:  raw[:request_id] || '',
                 usage:       usage,
                 stop_reason: map_stop_reason(raw[:stop_reason] || raw['stop_reason'])
               )
             else
-              # Per G20d: ignore unknown chunk types on consume
               log.debug("[anthropic translator] ignoring unknown chunk type: #{type.inspect}")
               nil
             end
@@ -488,6 +502,91 @@ module Legion
           end
 
           # --- chunk parsing ---
+
+          # --- Anthropic wire-format SSE event parsers ---
+
+          def parse_content_block_delta(raw, delta, delta_type)
+            index = raw[:index] || raw['index']
+            case delta_type
+            when 'text_delta'
+              Canonical::Chunk.text_delta(
+                delta:       delta[:text] || delta['text'] || '',
+                request_id:  raw[:request_id],
+                block_index: index
+              )
+            when 'thinking_delta'
+              Canonical::Chunk.thinking_delta(
+                delta:       delta[:thinking] || delta['thinking'] || '',
+                request_id:  raw[:request_id],
+                block_index: index
+              )
+            when 'signature_delta'
+              Canonical::Chunk.thinking_delta(
+                delta:       '',
+                request_id:  raw[:request_id],
+                block_index: index,
+                signature:   delta[:signature] || delta['signature']
+              )
+            when 'input_json_delta'
+              tc = Canonical::ToolCall.new(
+                id: nil, exchange_id: nil, name: nil, source: nil,
+                arguments: delta[:partial_json] || delta['partial_json'] || '',
+                status: nil, duration_ms: nil, result: nil, error: nil,
+                started_at: nil, finished_at: nil, category: nil,
+                data_handling_classification: nil, policy_decision: nil
+              )
+              Canonical::Chunk.tool_call_delta(
+                tool_call:   tc,
+                request_id:  raw[:request_id],
+                block_index: index
+              )
+            else
+              log.debug("[anthropic translator] ignoring content_block_delta delta_type: #{delta_type}")
+              nil
+            end
+          end
+
+          def parse_content_block_start(raw)
+            content_block = raw[:content_block] || raw['content_block'] || {}
+            return nil unless content_block.is_a?(Hash)
+
+            block_type = content_block[:type] || content_block['type']
+            return nil unless block_type == 'tool_use'
+
+            tc = Canonical::ToolCall.build(
+              id:   content_block[:id] || content_block['id'],
+              name: content_block[:name] || content_block['name']
+            )
+            Canonical::Chunk.tool_call_delta(
+              tool_call:   tc,
+              request_id:  raw[:request_id],
+              block_index: raw[:index] || raw['index']
+            )
+          end
+
+          def parse_message_start(raw)
+            message = raw[:message] || raw['message'] || {}
+            message = {} unless message.is_a?(Hash)
+            usage_raw = message[:usage] || message['usage']
+            usage = Canonical::Usage.from_hash(usage_raw) if usage_raw.is_a?(Hash) && usage_raw.any?
+
+            Canonical::Chunk.usage_chunk(
+              usage:      usage,
+              request_id: raw[:request_id] || ''
+            )
+          end
+
+          def parse_message_delta(raw, delta)
+            usage_raw = raw[:usage] || raw['usage']
+            usage = Canonical::Usage.from_hash(usage_raw) if usage_raw.is_a?(Hash) && usage_raw.any?
+            stop_reason = delta[:stop_reason] || delta['stop_reason']
+
+            Canonical::Chunk.done(
+              request_id:  raw[:request_id] || '',
+              usage:       usage,
+              stop_reason: map_stop_reason(stop_reason)
+            )
+          end
 
           def extract_delta(raw, _type)
             delta_val = raw[:delta] || raw['delta']

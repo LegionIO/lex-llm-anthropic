@@ -189,5 +189,186 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
         expect(chunk.stop_reason).to eq(:end_turn)
       end
     end
+
+    context 'real Anthropic wire-format SSE events' do
+      it 'parses content_block_delta with text_delta' do
+        raw = {
+          'type'  => 'content_block_delta',
+          'index' => 0,
+          'delta' => { 'type' => 'text_delta', 'text' => 'Hello world' }
+        }
+        chunk = translator.parse_chunk(raw)
+        expect(chunk).not_to be_nil
+        expect(chunk.type).to eq(:text_delta)
+        expect(chunk.delta).to eq('Hello world')
+        expect(chunk.block_index).to eq(0)
+      end
+
+      it 'parses content_block_delta with thinking_delta' do
+        raw = {
+          'type'  => 'content_block_delta',
+          'index' => 0,
+          'delta' => { 'type' => 'thinking_delta', 'thinking' => 'Let me reason...' }
+        }
+        chunk = translator.parse_chunk(raw)
+        expect(chunk).not_to be_nil
+        expect(chunk.type).to eq(:thinking_delta)
+        expect(chunk.delta).to eq('Let me reason...')
+      end
+
+      it 'parses content_block_delta with signature_delta' do
+        raw = {
+          'type'  => 'content_block_delta',
+          'index' => 0,
+          'delta' => { 'type' => 'signature_delta', 'signature' => 'ErUB...' }
+        }
+        chunk = translator.parse_chunk(raw)
+        expect(chunk).not_to be_nil
+        expect(chunk.type).to eq(:thinking_delta)
+        expect(chunk.signature).to eq('ErUB...')
+      end
+
+      it 'parses content_block_delta with input_json_delta for tool calls' do
+        raw = {
+          'type'  => 'content_block_delta',
+          'index' => 1,
+          'delta' => { 'type' => 'input_json_delta', 'partial_json' => '{"path":' }
+        }
+        chunk = translator.parse_chunk(raw)
+        expect(chunk).not_to be_nil
+        expect(chunk.type).to eq(:tool_call_delta)
+      end
+
+      it 'parses content_block_start with tool_use' do
+        raw = {
+          'type'          => 'content_block_start',
+          'index'         => 1,
+          'content_block' => { 'type' => 'tool_use', 'id' => 'toolu_123', 'name' => 'read_file' }
+        }
+        chunk = translator.parse_chunk(raw)
+        expect(chunk).not_to be_nil
+        expect(chunk.type).to eq(:tool_call_delta)
+        expect(chunk.tool_call.id).to eq('toolu_123')
+        expect(chunk.tool_call.name).to eq('read_file')
+      end
+
+      it 'parses message_delta with stop_reason and usage' do
+        raw = {
+          'type'  => 'message_delta',
+          'delta' => { 'stop_reason' => 'end_turn' },
+          'usage' => { 'output_tokens' => 42 }
+        }
+        chunk = translator.parse_chunk(raw)
+        expect(chunk).not_to be_nil
+        expect(chunk.type).to eq(:done)
+        expect(chunk.stop_reason).to eq(:end_turn)
+        expect(chunk.usage.output_tokens).to eq(42)
+      end
+
+      it 'parses message_stop' do
+        raw = { 'type' => 'message_stop' }
+        chunk = translator.parse_chunk(raw)
+        expect(chunk).not_to be_nil
+        expect(chunk.type).to eq(:done)
+      end
+
+      it 'ignores content_block_start for non-tool-use blocks' do
+        raw = {
+          'type'          => 'content_block_start',
+          'index'         => 0,
+          'content_block' => { 'type' => 'text', 'text' => '' }
+        }
+        chunk = translator.parse_chunk(raw)
+        expect(chunk).to be_nil
+      end
+
+      it 'parses message_start with model and input_tokens' do
+        raw = {
+          'type'    => 'message_start',
+          'message' => {
+            'id'    => 'msg_abc',
+            'model' => 'claude-sonnet-4-20250514',
+            'usage' => { 'input_tokens' => 250 }
+          }
+        }
+        chunk = translator.parse_chunk(raw)
+        expect(chunk).not_to be_nil
+        expect(chunk.type).to eq(:usage)
+        expect(chunk.usage.input_tokens).to eq(250)
+      end
+
+      it 'produces nil-id tool_call for input_json_delta fragments' do
+        raw = {
+          'type'  => 'content_block_delta',
+          'index' => 1,
+          'delta' => { 'type' => 'input_json_delta', 'partial_json' => '{"path":"src/m' }
+        }
+        chunk = translator.parse_chunk(raw)
+        expect(chunk).not_to be_nil
+        expect(chunk.type).to eq(:tool_call_delta)
+        expect(chunk.tool_call.id).to be_nil
+        expect(chunk.tool_call.arguments).to eq('{"path":"src/m')
+      end
+    end
+
+    context 'end-to-end tool call accumulation through provider bridge' do
+      let(:provider) do
+        Legion::Extensions::Llm::Anthropic::Provider.new({
+                                                           anthropic_api_key: 'test-key', request_timeout: 30, max_retries: 0,
+          retry_interval: 0, retry_backoff_factor: 0, retry_interval_randomness: 0
+                                                         })
+      end
+
+      it 'accumulates content_block_start + input_json_delta fragments into one parsed tool call' do
+        accumulator = Legion::Extensions::Llm::StreamAccumulator.new
+
+        content_block_start_event = {
+          'type' => 'content_block_start', 'index' => 1,
+          'content_block' => { 'type' => 'tool_use', 'id' => 'toolu_abc', 'name' => 'read_file' }
+        }
+        first_json_delta = {
+          'type' => 'content_block_delta', 'index' => 1,
+          'delta' => { 'type' => 'input_json_delta', 'partial_json' => '{"path":"' }
+        }
+        second_json_delta = {
+          'type' => 'content_block_delta', 'index' => 1,
+          'delta' => { 'type' => 'input_json_delta', 'partial_json' => 'src/main.rb"}' }
+        }
+
+        accumulator.add(provider.send(:build_chunk, content_block_start_event))
+        accumulator.add(provider.send(:build_chunk, first_json_delta))
+        accumulator.add(provider.send(:build_chunk, second_json_delta))
+
+        message = accumulator.to_message(nil)
+        expect(message.tool_calls['toolu_abc'].arguments).to eq({ 'path' => 'src/main.rb' })
+      end
+    end
+
+    context 'end-to-end message_start model/usage propagation through provider bridge' do
+      let(:provider) do
+        Legion::Extensions::Llm::Anthropic::Provider.new({
+                                                           anthropic_api_key: 'test-key', request_timeout: 30, max_retries: 0,
+          retry_interval: 0, retry_backoff_factor: 0, retry_interval_randomness: 0
+                                                         })
+      end
+
+      it 'accumulator receives model_id and input_tokens from message_start' do
+        accumulator = Legion::Extensions::Llm::StreamAccumulator.new
+
+        message_start_event = {
+          'type'    => 'message_start',
+          'message' => {
+            'model' => 'claude-sonnet-4-20250514',
+            'usage' => { 'input_tokens' => 500 }
+          }
+        }
+
+        accumulator.add(provider.send(:build_chunk, message_start_event))
+        message = accumulator.to_message(nil)
+
+        expect(message.model_id).to eq('claude-sonnet-4-20250514')
+        expect(message.input_tokens).to eq(500)
+      end
+    end
   end
 end
