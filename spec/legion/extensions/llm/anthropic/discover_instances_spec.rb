@@ -128,4 +128,38 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
       expect(described_class.provider_aliases).to eq([])
     end
   end
+
+  describe '.resolve_default_model (policy-aware default)' do
+    before { allow(credential_sources).to receive(:setting).with(:extensions, :llm, :anthropic).and_return(nil) }
+
+    it 'keeps a configured default when no policy is set' do
+      expect(described_class.resolve_default_model(default_model: 'claude-opus-4-8')).to eq('claude-opus-4-8')
+    end
+
+    it 'falls back to DEFAULT_MODEL when none is configured and no policy is set' do
+      expect(described_class.resolve_default_model({})).to eq(described_class::DEFAULT_MODEL)
+    end
+
+    it 'keeps a configured default that the whitelist permits' do
+      expect(described_class.resolve_default_model(default_model:   'claude-haiku-4-5-20251001',
+                                                   model_whitelist: %w[haiku])).to eq('claude-haiku-4-5-20251001')
+    end
+
+    it 'drops a configured default the whitelist forbids rather than forcing it' do
+      # The hardcoded DEFAULT_MODEL (sonnet) is also forbidden here, so the result is
+      # nil — routing then resolves an allowed discovered model, not a forbidden default.
+      expect(described_class.resolve_default_model(default_model:   'claude-sonnet-4-6',
+                                                   model_whitelist: %w[haiku])).to be_nil
+    end
+
+    it 'does not fall back to a blacklisted DEFAULT_MODEL' do
+      expect(described_class.resolve_default_model(model_blacklist: %w[sonnet])).to be_nil
+    end
+
+    it 'reads the provider-level whitelist when the instance config has none' do
+      allow(credential_sources).to receive(:setting).with(:extensions, :llm, :anthropic)
+                                                    .and_return({ model_whitelist: %w[haiku] })
+      expect(described_class.resolve_default_model(default_model: 'claude-sonnet-4-6')).to be_nil
+    end
+  end
 end

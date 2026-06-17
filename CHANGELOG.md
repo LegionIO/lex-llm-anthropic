@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.21 - 2026-06-17
+
+### Changed
+- **Policy-aware default model** — `default_model` is no longer a hardcoded literal forced via `||=`. The `claude-sonnet-4-6` fallback is now a named `DEFAULT_MODEL` constant applied through `Provider.policy_safe_default_model`, so a configured `model_whitelist`/`model_blacklist` is never overridden: if neither the configured default nor the fallback is permitted, `default_model` is left unset and routing resolves an allowed discovered model instead. (Fixes the case where a haiku-only whitelist still surfaced a sonnet default.) Requires lex-llm >= 0.5.4.
+
 ## 0.2.20 - 2026-06-16
 
 - dependency updates, code quality improvements
