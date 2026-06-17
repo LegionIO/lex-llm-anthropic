@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.20 - 2026-06-16
+
+- dependency updates, code quality improvements
+
+## 0.2.19 - 2026-06-15
+
+- **CapabilityPolicy integration** — Streaming and tools from `:provider_envelope`; vision/thinking default false unless explicitly enabled via settings. Settings overrides at provider/instance/model level supported.
+
+## 0.2.18 - 2026-06-13
+
+- **Gemfile cleanup** — Remove local path overrides; all dependencies resolve from gemspec via rubygems.
+- 135 examples, 0 failures; 20 files, 0 rubocop offenses.
+
 ## 0.2.17 - 2026-06-10
 
 - **Canonical provider translator (Phase 3)** — New `Translator` class implementing the Anthropic↔canonical boundary per N×N routing design. Public interface: `render_request(canonical_request)`, `parse_response(wire)`, `parse_chunk(raw)`, `capabilities`. Extracted from existing `Provider` render/parse methods — behaviour preserved, not rewritten (translator.rb).

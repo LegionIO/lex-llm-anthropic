@@ -9,7 +9,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     Legion::Extensions::Llm::Model::Info.new(id: 'claude-sonnet-4-5-20250929', provider: :anthropic,
                                              metadata: { max_output_tokens: 8192 })
   end
-  let(:registry_publisher) { instance_double(described_class::RegistryPublisher) }
+  let(:registry_publisher) { instance_double(Legion::Extensions::Llm::RegistryPublisher) }
 
   it 'exposes provider defaults with inherited fleet settings' do
     settings = described_class.default_settings
@@ -203,7 +203,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   end
 
   def capture_registry_events(models, readiness:)
-    publisher = described_class::RegistryPublisher.new
+    publisher = Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :anthropic)
     events = []
     allow(publisher).to receive(:publishing_available?).and_return(true)
     allow(publisher).to receive(:publish_event) { |event| events << event }

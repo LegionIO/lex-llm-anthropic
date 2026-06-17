@@ -20,7 +20,7 @@ module Legion
             def capabilities = Capabilities
 
             def registry_publisher
-              @registry_publisher ||= RegistryPublisher.new
+              @registry_publisher ||= Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :anthropic)
             end
           end
 
@@ -54,6 +54,10 @@ module Legion
           def stream_url = completion_url
           def models_url = '/v1/models'
 
+          def translator
+            @translator ||= Translator.new(config)
+          end
+
           def embed(**_provider_options)
             raise NotImplementedError, 'Anthropic does not expose embeddings through this provider'
           end
@@ -75,6 +79,8 @@ module Legion
             'claude-3-sonnet' => 200_000,
             'claude-3-haiku'  => 200_000
           }.freeze
+
+          COMPLETION_BASE = [:completion].freeze
 
           private
 
@@ -186,7 +192,11 @@ module Legion
 
           def format_tool_call_message(message, thinking:, cache:)
             blocks = content_blocks(message.content, thinking:, message:, cache:)
-            message.tool_calls.each_value { |tool_call| blocks << tool_use_block(tool_call, cache:) }
+            # tool_calls is an Array of ToolCall since the adapter stopped
+            # name-keying them (name-keyed hashes silently dropped parallel
+            # same-name calls); tolerate the legacy Hash shape from old callers.
+            calls = message.tool_calls.is_a?(Hash) ? message.tool_calls.values : Array(message.tool_calls)
+            calls.each { |tool_call| blocks << tool_use_block(tool_call, cache:) }
             { role: 'assistant', content: blocks }
           end
 
@@ -274,8 +284,8 @@ module Legion
           def tool_schema(tool)
             return tool.params_schema if tool.respond_to?(:params_schema) && tool.params_schema
 
-            { type: 'object',
-              properties: tool.respond_to?(:parameters) ? tool.parameters : (tool[:parameters] || tool['parameters'] || {}), required: [] }
+            raw = tool.respond_to?(:parameters) ? tool.parameters : (tool[:parameters] || tool['parameters'])
+            Legion::Extensions::Llm::Canonical::ToolDefinition.normalize_parameters(raw)
           end
 
           def tool_choice(tool_prefs)
@@ -318,92 +328,78 @@ module Legion
 
           def parse_completion_response(response)
             body = response.body
-            content_blocks = body['content'] || []
-            usage = body['usage'] || {}
-
-            Legion::Extensions::Llm::Message.new(
-              role:                  :assistant,
-              content:               text_from(content_blocks),
-              model_id:              body['model'],
-              thinking:              thinking_from(content_blocks),
-              tool_calls:            parse_tool_calls(content_blocks),
-              input_tokens:          usage['input_tokens'],
-              output_tokens:         usage['output_tokens'],
-              cached_tokens:         usage['cache_read_input_tokens'],
-              cache_creation_tokens: cache_creation_tokens(usage),
-              thinking_tokens:       thinking_tokens(usage),
-              raw:                   body
-            )
-          end
-
-          def text_from(blocks)
-            blocks.select { |block| block['type'] == 'text' }.map { |block| block['text'] }.join
-          end
-
-          def thinking_from(blocks)
-            thinking_block = blocks.find { |block| block['type'] == 'thinking' }
-            redacted_block = blocks.find { |block| block['type'] == 'redacted_thinking' }
-
-            Legion::Extensions::Llm::Thinking.build(
-              text:      thinking_block&.dig('thinking') || thinking_block&.dig('text'),
-              signature: thinking_block&.dig('signature') || redacted_block&.dig('data')
-            )
-          end
-
-          def cache_creation_tokens(usage)
-            cache_creation = usage['cache_creation']
-            cache_creation_values = cache_creation.values if cache_creation
-
-            usage['cache_creation_input_tokens'] || cache_creation_values&.compact&.sum
-          end
-
-          def thinking_tokens(usage)
-            usage.dig('output_tokens_details', 'thinking_tokens') ||
-              usage.dig('output_tokens_details', 'reasoning_tokens') ||
-              usage['thinking_tokens'] ||
-              usage['reasoning_tokens']
+            canonical = translator.parse_response(body)
+            to_legacy_message(canonical, body)
           end
 
           def build_chunk(data)
-            delta_type = data.dig('delta', 'type')
+            canonical_chunk = translator.parse_chunk(data)
+            return nil if canonical_chunk.nil?
 
-            Legion::Extensions::Llm::Chunk.new(
-              role:          :assistant,
-              content:       delta_type == 'text_delta' ? data.dig('delta', 'text') : nil,
-              model_id:      data.dig('message', 'model'),
-              thinking:      Legion::Extensions::Llm::Thinking.build(
-                text:      delta_type == 'thinking_delta' ? data.dig('delta', 'thinking') : nil,
-                signature: delta_type == 'signature_delta' ? data.dig('delta', 'signature') : nil
-              ),
-              input_tokens:  data.dig('message', 'usage', 'input_tokens'),
-              output_tokens: data.dig('message', 'usage', 'output_tokens') || data.dig('usage', 'output_tokens'),
-              tool_calls:    extract_streaming_tool_calls(data, delta_type)
+            to_legacy_chunk(canonical_chunk, data)
+          end
+
+          def to_legacy_message(canonical, raw_body)
+            usage = canonical.usage
+            Legion::Extensions::Llm::Message.new(
+              role:                  :assistant,
+              content:               canonical.text,
+              model_id:              canonical.model,
+              thinking:              if canonical.thinking
+                                       Legion::Extensions::Llm::Thinking.build(
+                                         text:      canonical.thinking.content,
+                                         signature: canonical.thinking.signature
+                                       )
+                                     end,
+              tool_calls:            legacy_tool_calls(canonical.tool_calls),
+              input_tokens:          usage&.input_tokens,
+              output_tokens:         usage&.output_tokens,
+              cached_tokens:         usage&.cache_read_tokens,
+              cache_creation_tokens: usage&.cache_write_tokens,
+              thinking_tokens:       usage&.thinking_tokens,
+              raw:                   raw_body
             )
           end
 
-          def extract_streaming_tool_calls(data, _delta_type)
-            content_block = data['content_block']
-            return nil unless content_block && content_block['type'] == 'tool_use'
-
-            { content_block['id'] => Legion::Extensions::Llm::ToolCall.new(
-              id: content_block['id'], name: content_block['name'], arguments: ''
-            ) }
+          def to_legacy_chunk(canonical_chunk, raw_data)
+            Legion::Extensions::Llm::Chunk.new(
+              role:          :assistant,
+              content:       canonical_chunk.text_delta? ? canonical_chunk.delta : nil,
+              model_id:      raw_data.dig('message', 'model'),
+              thinking:      if canonical_chunk.thinking_delta?
+                               Legion::Extensions::Llm::Thinking.build(
+                                 text:      canonical_chunk.delta,
+                                 signature: canonical_chunk.signature
+                               )
+                             end,
+              input_tokens:  canonical_chunk.usage&.input_tokens,
+              output_tokens: canonical_chunk.usage&.output_tokens,
+              tool_calls:    legacy_streaming_tool_calls(canonical_chunk)
+            )
           end
 
-          def parse_tool_calls(content_blocks)
-            blocks = Array(content_blocks).select { |block| block && block['type'] == 'tool_use' }
-            return nil if blocks.empty?
+          def legacy_tool_calls(canonical_tool_calls)
+            return nil if canonical_tool_calls.nil? || canonical_tool_calls.empty?
 
-            blocks.to_h do |block|
+            canonical_tool_calls.to_h do |tc|
               [
-                block['id'],
+                tc.id,
                 Legion::Extensions::Llm::ToolCall.new(
-                  id:        block['id'],
-                  name:      block['name'],
-                  arguments: block['input'] || {}
+                  id: tc.id, name: tc.name, arguments: tc.arguments || {}
                 )
               ]
             end
+          end
+
+          def legacy_streaming_tool_calls(canonical_chunk)
+            return nil unless canonical_chunk.tool_call_delta?
+
+            tc = canonical_chunk.tool_call
+            return nil unless tc
+
+            { tc.id => Legion::Extensions::Llm::ToolCall.new(
+              id: tc.id, name: tc.name, arguments: tc.arguments || ''
+            ) }
           end
 
           def parse_list_models_response(response, provider, _capabilities)
@@ -411,23 +407,45 @@ module Legion
               model_id = model.fetch('id')
               detail = model_detail(model_id)
               ctx = detail&.dig(:context_window) || infer_context_window(model_id)
+              resolved = resolve_model_capabilities(model_id)
               Legion::Extensions::Llm::Model::Info.new(
                 id:             model_id,
                 name:           model['display_name'] || model_id,
                 provider:       provider,
-                capabilities:   %i[completion streaming tools],
+                capabilities:   COMPLETION_BASE + resolved[:capabilities],
                 context_length: ctx,
                 metadata:       model.merge('created_at' => model['created_at']).compact
               )
             end
           end
 
-          def infer_context_window(model_id)
-            CONTEXT_WINDOWS.find { |prefix, _| model_id.start_with?(prefix) }&.last
+          def resolve_model_capabilities(model_id)
+            provider_settings = CredentialSources.setting(:extensions, :llm, :anthropic)
+            provider_cfg = provider_settings.is_a?(Hash) ? provider_settings.except(:instances) : {}
+            model_cfg = model_config_for(model_id, provider_settings)
+
+            Legion::Extensions::Llm::CapabilityPolicy.resolve(
+              real:              {},
+              provider_catalog:  {},
+              probe:             {},
+              provider_envelope: { streaming: true, tools: true },
+              provider_config:   provider_cfg,
+              instance_config:   config.respond_to?(:to_h) ? config.to_h : {},
+              model_config:      model_cfg
+            )
           end
 
-          def model_detail(model_name)
-            fetch_model_detail(model_name)
+          def model_config_for(model_id, provider_settings)
+            return {} unless provider_settings.is_a?(Hash)
+
+            models = provider_settings[:models] || provider_settings['models']
+            return {} unless models.is_a?(Hash)
+
+            models[model_id.to_sym] || models[model_id] || {}
+          end
+
+          def infer_context_window(model_id)
+            CONTEXT_WINDOWS.find { |prefix, _| model_id.start_with?(prefix) }&.last
           end
 
           def fetch_model_detail(model_name)
