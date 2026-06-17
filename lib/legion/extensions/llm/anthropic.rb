@@ -17,12 +17,16 @@ module Legion
         extend Legion::Extensions::Llm::AutoRegistration
 
         PROVIDER_FAMILY = :anthropic
+        # Provider's preferred default when the operator configures none. Used only
+        # as a fallback and only when the configured model policy permits it
+        # (see resolve_default_model) — a whitelist/blacklist is never overridden.
+        DEFAULT_MODEL = 'claude-sonnet-4-6'
 
         def self.default_settings
           ::Legion::Extensions::Llm.provider_settings(
             family:   PROVIDER_FAMILY,
             instance: {
-              default_model:      'claude-sonnet-4-6',
+              default_model:      DEFAULT_MODEL,
               endpoint:           'https://api.anthropic.com',
               api_version:        '2023-10-16',
               default_max_tokens: 4096,
@@ -117,9 +121,18 @@ module Legion
           CredentialSources.dedup_credentials(candidates).transform_values do |config|
             sanitized = sanitize_instance_config(config)
             sanitized[:capabilities] ||= %i[completion streaming vision tools].freeze
-            sanitized[:default_model] ||= 'claude-sonnet-4-6'
+            sanitized[:default_model] = resolve_default_model(sanitized)
             sanitized
           end
+        end
+
+        # Resolve a default_model that never violates the configured model policy
+        # (whitelist/blacklist stays authoritative over the DEFAULT_MODEL fallback).
+        def self.resolve_default_model(config)
+          provider_class.policy_safe_default_model(
+            configured: config[:default_model], fallback: DEFAULT_MODEL,
+            **provider_class.model_policy(config, PROVIDER_FAMILY)
+          )
         end
 
         def self.settings_instances(config)
