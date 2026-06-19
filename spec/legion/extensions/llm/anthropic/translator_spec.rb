@@ -70,6 +70,55 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
         expect(wire[:seed]).to eq(42)
       end
     end
+
+    context 'prompt cache-control injection (C5)' do
+      let(:long_system) { 'A' * 1025 }
+      let(:short_system) { 'A' * 512 }
+
+      def req_with_system(system_str)
+        canonical::Request.build(
+          system:   system_str,
+          messages: [canonical::Message.build(role: :user, content: 'hi')]
+        )
+      end
+
+      it 'injects cache_control on last system block when caching enabled and content exceeds min_tokens' do
+        t = described_class.new(prompt_caching: { enabled: true, min_tokens: 1024 })
+        wire = t.render_request(req_with_system(long_system))
+        last_system_block = wire[:system].last
+        expect(last_system_block[:cache_control]).to eq({ type: 'ephemeral' })
+      end
+
+      it 'does not inject cache_control when content is below min_tokens' do
+        t = described_class.new(prompt_caching: { enabled: true, min_tokens: 1024 })
+        wire = t.render_request(req_with_system(short_system))
+        last_system_block = wire[:system].last
+        expect(last_system_block[:cache_control]).to be_nil
+      end
+
+      it 'does not inject cache_control when caching disabled' do
+        t = described_class.new(prompt_caching: { enabled: false })
+        wire = t.render_request(req_with_system(long_system))
+        last_system_block = wire[:system].last
+        expect(last_system_block[:cache_control]).to be_nil
+      end
+
+      it 'does not inject cache_control when system is absent' do
+        t = described_class.new(prompt_caching: { enabled: true, min_tokens: 1024 })
+        wire = t.render_request(req_with_system(nil))
+        expect(wire[:system]).to be_nil
+      end
+
+      it 'passes through cache_control: nil for system Hash already carrying cache_control' do
+        t = described_class.new(prompt_caching: { enabled: true, min_tokens: 1024 })
+        req = canonical::Request.build(
+          system:   { content: long_system, cache_control: { type: 'ephemeral' } },
+          messages: [canonical::Message.build(role: :user, content: 'hi')]
+        )
+        wire = t.render_request(req)
+        expect(wire[:system]).to eq({ content: long_system, cache_control: { type: 'ephemeral' } })
+      end
+    end
   end
 
   describe '#parse_response' do
