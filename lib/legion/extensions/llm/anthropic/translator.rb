@@ -661,11 +661,8 @@ module Legion
 
           def prompt_caching_settings
             return @config[:prompt_caching] if @config.key?(:prompt_caching)
-            return {} unless defined?(::Legion::Settings)
 
-            ::Legion::Settings.dig(:extensions, :llm, :anthropic, :prompt_caching) ||
-              ::Legion::Settings.dig(:llm, :prompt_caching) ||
-              {}
+            Legion::Settings.dig(:extensions, :llm, :anthropic, :prompt_caching) || {}
           end
 
           # --- settings helpers ---
