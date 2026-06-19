@@ -59,7 +59,7 @@ module Legion
             value = configured_node.to_s.strip
             value.empty? ? :anthropic : value.to_sym
           rescue StandardError => e
-            handle_exception(e, level: :debug, handled: true,
+            handle_exception(e, level: :warn, handled: true,
                                 operation: 'anthropic.registry.provider_instance')
             :anthropic
           end

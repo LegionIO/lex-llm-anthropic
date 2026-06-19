@@ -173,7 +173,7 @@ module Legion
               nil
             end
           rescue StandardError => e
-            handle_exception(e, level: :debug, handled: true, operation: 'anthropic.translator.parse_chunk')
+            handle_exception(e, level: :warn, handled: true, operation: 'anthropic.translator.parse_chunk')
             Canonical::Chunk.error_chunk(
               error:      "#{e.class}: #{e.message}",
               request_id: raw[:request_id] || ''
