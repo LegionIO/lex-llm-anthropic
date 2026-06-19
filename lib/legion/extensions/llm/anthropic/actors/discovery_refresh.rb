@@ -38,7 +38,6 @@ module Legion
               Legion::LLM::Discovery.refresh_discovered_models!(provider: :anthropic)
 
               Legion::LLM::Router.populate_auto_rules(Legion::LLM::Discovery.discovered_instances) if defined?(Legion::LLM::Router) && Legion::LLM::Router.respond_to?(:populate_auto_rules)
-              Legion::LLM::Inventory.invalidate_offerings_cache! if defined?(Legion::LLM::Inventory) && Legion::LLM::Inventory.respond_to?(:invalidate_offerings_cache!)
             rescue StandardError => e
               handle_exception(e, level: :warn, handled: true, operation: 'anthropic.actor.discovery_refresh')
             end
