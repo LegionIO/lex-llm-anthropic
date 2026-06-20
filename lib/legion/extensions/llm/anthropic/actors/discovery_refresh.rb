@@ -58,12 +58,17 @@ module Legion
 
               instances.each do |instance|
                 adapter = instance[:adapter]
-                next unless adapter.respond_to?(:offerings)
+                source =
+                  if adapter.respond_to?(:discover_offerings) then adapter.discover_offerings(live: false)
+                  elsif adapter.respond_to?(:offerings) then adapter.offerings(live: false)
+                  else next
+                  end
 
-                Array(adapter.offerings(live: false)).filter_map do |offering|
-                  next unless offering.is_a?(Hash)
+                Array(source).filter_map do |raw|
+                  offering = offering_to_hash(raw)
+                  next unless offering
 
-                  instance_id = instance[:instance_id] || instance[:id] || 'default'
+                  instance_id = instance[:instance] || instance[:instance_id] || instance[:id] || 'default'
                   model       = offering[:model] || offering[:id]
                   next unless model
 
@@ -137,6 +142,20 @@ module Legion
               tick if respond_to?(:tick)
             rescue StandardError => e
               handle_exception(e, level: :warn, handled: true, operation: 'anthropic.actor.discovery_refresh')
+            end
+
+            private
+
+            # ModelOffering objects do not implement `[]`; normalize to a Hash so the
+            # writer stays Hash-shaped. Hash inputs pass through untouched.
+            def offering_to_hash(offering)
+              return nil if offering.nil?
+              return offering if offering.is_a?(Hash)
+
+              hash = offering.to_h
+              hash[:type] ||= hash[:usage_type]
+              hash[:enabled] = offering.respond_to?(:enabled?) ? offering.enabled? : true
+              hash
             end
           end
         end
