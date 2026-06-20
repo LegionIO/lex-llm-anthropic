@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.24] - 2026-06-20
+
+### Fixed
+- Route Anthropic capability overrides through the shared `lex-llm` provider contract so provider, instance, and model settings all resolve through the same canonical capability vocabulary.
+
 ## [0.2.23] - 2026-06-19
 
 ### Changed

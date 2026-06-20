@@ -420,28 +420,15 @@ module Legion
           end
 
           def resolve_model_capabilities(model_id)
-            provider_settings = CredentialSources.setting(:extensions, :llm, :anthropic)
-            provider_cfg = provider_settings.is_a?(Hash) ? provider_settings.except(:instances) : {}
-            model_cfg = model_config_for(model_id, provider_settings)
-
             Legion::Extensions::Llm::CapabilityPolicy.resolve(
               real:              {},
               provider_catalog:  {},
               probe:             {},
               provider_envelope: { streaming: true, tools: true },
-              provider_config:   provider_cfg,
-              instance_config:   config.respond_to?(:to_h) ? config.to_h : {},
-              model_config:      model_cfg
+              provider_config:   provider_capability_config,
+              instance_config:   instance_capability_config,
+              model_config:      model_capability_config(model_id)
             )
-          end
-
-          def model_config_for(model_id, provider_settings)
-            return {} unless provider_settings.is_a?(Hash)
-
-            models = provider_settings[:models] || provider_settings['models']
-            return {} unless models.is_a?(Hash)
-
-            models[model_id.to_sym] || models[model_id] || {}
           end
 
           def infer_context_window(model_id)
