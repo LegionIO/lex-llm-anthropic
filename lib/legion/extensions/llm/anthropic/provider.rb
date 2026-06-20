@@ -79,7 +79,7 @@ module Legion
               next unless model_matches_filters?(model, filters)
               next unless model_allowed?(model.id)
 
-              log.unknown("[#{slug}] instance=#{provider_instance_id} action=model_discovered model=#{model.id} family=#{model.family}")
+              log.debug("[#{slug}] instance=#{provider_instance_id} action=model_discovered model=#{model.id} family=#{model.family}")
               offering_from_model(model, health: provider_health)
             end
             log.info("[#{slug}] instance=#{provider_instance_id} action=discover_complete model_count=#{Array(@cached_offerings).size}")
