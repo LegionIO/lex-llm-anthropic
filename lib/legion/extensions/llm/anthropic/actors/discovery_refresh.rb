@@ -135,13 +135,6 @@ module Legion
 
             def manual
               tick if respond_to?(:tick)
-
-              log.debug('[anthropic][discovery_refresh] refreshing model list')
-              return unless defined?(Legion::LLM::Discovery)
-
-              Legion::LLM::Discovery.refresh_discovered_models!(provider: :anthropic)
-
-              Legion::LLM::Router.populate_auto_rules(Legion::LLM::Discovery.discovered_instances) if defined?(Legion::LLM::Router) && Legion::LLM::Router.respond_to?(:populate_auto_rules)
             rescue StandardError => e
               handle_exception(e, level: :warn, handled: true, operation: 'anthropic.actor.discovery_refresh')
             end
