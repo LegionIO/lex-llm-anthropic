@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.26] - 2026-06-20
+
+### Fixed
+- Stub shared registry publishing through `RegistryPublisher#schedule` in specs so async availability-event coverage stays stable after the shared publisher moved off raw `Thread.new`.
+
 ## [0.2.25] - 2026-06-20
 
 ### Fixed
