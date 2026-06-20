@@ -4,9 +4,6 @@ source 'https://rubygems.org'
 
 gemspec
 
-lex_llm_path = File.expand_path('../lex-llm', __dir__)
-gem 'lex-llm', path: lex_llm_path if Dir.exist?(lex_llm_path)
-
 group :development do
   gem 'bundler', '>= 2.0'
   gem 'rake', '>= 13.0'
