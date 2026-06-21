@@ -65,9 +65,30 @@ module Legion
           def list_models(**)
             log.debug { 'listing available Anthropic models' }
             super.tap do |models|
-              log.debug { "discovered #{Array(models).size} Anthropic model(s); publishing to registry" }
-              self.class.registry_publisher.publish_models_async(models, readiness: readiness(live: false))
+              log.debug { "discovered #{Array(models).size} Anthropic model(s)" }
             end
+          end
+
+          def discover_offerings(live: false, raise_on_unreachable: false, **filters)
+            return filter_cached_offerings(Array(@cached_offerings), filters) unless live
+
+            provider_health = health(live:)
+            readiness = discovery_registry_readiness(provider_health, live:)
+            @cached_offerings = Array(list_models(live:, **filters)).filter_map do |model|
+              self.class.registry_publisher.publish_models_async([model], readiness:)
+              next unless model_matches_filters?(model, filters)
+              next unless model_allowed?(model.id)
+
+              log.debug("[#{slug}] instance=#{provider_instance_id} action=model_discovered model=#{model.id} family=#{model.family}")
+              offering_from_model(model, health: provider_health)
+            end
+            log.info("[#{slug}] instance=#{provider_instance_id} action=discover_complete model_count=#{Array(@cached_offerings).size}")
+            @cached_offerings
+          rescue Faraday::ConnectionFailed, Faraday::TimeoutError => e
+            log.warn("[#{slug}] instance=#{provider_instance_id} unreachable: #{e.message}")
+            raise if raise_on_unreachable
+
+            []
           end
 
           CONTEXT_WINDOWS = {
@@ -83,6 +104,16 @@ module Legion
           COMPLETION_BASE = [:completion].freeze
 
           private
+
+          def discovery_registry_readiness(provider_health, live:)
+            {
+              provider:   slug.to_sym,
+              configured: configured?,
+              ready:      provider_health[:ready] == true,
+              live:       live,
+              health:     provider_health
+            }
+          end
 
           def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:)
             log_render_payload(messages:, tools:, model:, stream:, schema:)
@@ -420,28 +451,15 @@ module Legion
           end
 
           def resolve_model_capabilities(model_id)
-            provider_settings = CredentialSources.setting(:extensions, :llm, :anthropic)
-            provider_cfg = provider_settings.is_a?(Hash) ? provider_settings.except(:instances) : {}
-            model_cfg = model_config_for(model_id, provider_settings)
-
             Legion::Extensions::Llm::CapabilityPolicy.resolve(
               real:              {},
               provider_catalog:  {},
               probe:             {},
               provider_envelope: { streaming: true, tools: true },
-              provider_config:   provider_cfg,
-              instance_config:   config.respond_to?(:to_h) ? config.to_h : {},
-              model_config:      model_cfg
+              provider_config:   provider_capability_config,
+              instance_config:   instance_capability_config,
+              model_config:      model_capability_config(model_id)
             )
-          end
-
-          def model_config_for(model_id, provider_settings)
-            return {} unless provider_settings.is_a?(Hash)
-
-            models = provider_settings[:models] || provider_settings['models']
-            return {} unless models.is_a?(Hash)
-
-            models[model_id.to_sym] || models[model_id] || {}
           end
 
           def infer_context_window(model_id)

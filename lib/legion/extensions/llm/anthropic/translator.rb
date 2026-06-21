@@ -48,6 +48,7 @@ module Legion
                            else
                              render_system_content(system_messages)
                            end
+            inject_prompt_cache_control!(system_parts, canonical_request.system)
             message_parts = render_messages(chat_messages, thinking: thinking_enabled?(canonical_request))
             tools = render_tools(canonical_request.tools)
             tool_choice = render_tool_choice(canonical_request.tool_choice)
@@ -172,7 +173,7 @@ module Legion
               nil
             end
           rescue StandardError => e
-            handle_exception(e, level: :debug, handled: true, operation: 'anthropic.translator.parse_chunk')
+            handle_exception(e, level: :warn, handled: true, operation: 'anthropic.translator.parse_chunk')
             Canonical::Chunk.error_chunk(
               error:      "#{e.class}: #{e.message}",
               request_id: raw[:request_id] || ''
@@ -637,6 +638,31 @@ module Legion
 
             log.debug("[anthropic translator] unmapped stop_reason: #{raw.inspect}, defaulting to :end_turn")
             :end_turn
+          end
+
+          # --- prompt caching ---
+
+          def inject_prompt_cache_control!(system_parts, raw_system)
+            return unless system_parts.is_a?(Array) && !system_parts.empty?
+            return unless raw_system.is_a?(String)
+
+            caching = prompt_caching_settings
+            return unless caching[:enabled] != false
+
+            min_tokens = caching[:min_tokens] || 1024
+            return unless raw_system.length > min_tokens
+
+            last = system_parts.last
+            return unless last.is_a?(Hash) && last[:type] == 'text'
+
+            last[:cache_control] = { type: 'ephemeral' }
+            log.debug "[llm][anthropic][translator] action=inject_cache_control length=#{raw_system.length}"
+          end
+
+          def prompt_caching_settings
+            return @config[:prompt_caching] if @config.key?(:prompt_caching)
+
+            Legion::Settings.dig(:extensions, :llm, :anthropic, :prompt_caching) || {}
           end
 
           # --- settings helpers ---

@@ -81,6 +81,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     stub_model_discovery
 
     models = provider.list_models
+    provider.discover_offerings(live: true)
 
     expect_registry_publish(models)
   end
@@ -198,8 +199,10 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   end
 
   def expect_registry_publish(models)
-    expect(registry_publisher).to have_received(:publish_models_async)
-      .with(models, readiness: hash_including(provider: :anthropic, live: false))
+    Array(models).each do |model|
+      expect(registry_publisher).to have_received(:publish_models_async)
+        .with([model], readiness: hash_including(provider: :anthropic, live: true))
+    end
   end
 
   def capture_registry_events(models, readiness:)
@@ -207,7 +210,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     events = []
     allow(publisher).to receive(:publishing_available?).and_return(true)
     allow(publisher).to receive(:publish_event) { |event| events << event }
-    allow(Thread).to receive(:new).and_yield
+    allow(publisher).to receive(:schedule).and_yield
     publisher.publish_models_async(models, readiness:)
     events
   end

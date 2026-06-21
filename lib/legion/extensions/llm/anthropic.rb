@@ -35,6 +35,7 @@ module Legion
               credentials:        { api_key: 'env://ANTHROPIC_API_KEY' },
               usage:              { inference: true, embedding: false, image: false },
               limits:             { concurrency: 4 },
+              prompt_caching:     {},
               fleet:              {
                 enabled:             false,
                 respond_to_requests: false,

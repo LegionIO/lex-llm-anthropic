@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.2.26] - 2026-06-20
+
+### Fixed
+- Stub shared registry publishing through `RegistryPublisher#schedule` in specs so async availability-event coverage stays stable after the shared publisher moved off raw `Thread.new`.
+
+## [0.2.25] - 2026-06-20
+
+### Fixed
+- Stop bulk-publishing Anthropic model availability from `list_models`; discovery now emits one registry event per seen model from the shared `lex-llm` policy-filter path so blocked models stay observable without duplicate publishes.
+
+## [0.2.24] - 2026-06-20
+
+### Fixed
+- Route Anthropic capability overrides through the shared `lex-llm` provider contract so provider, instance, and model settings all resolve through the same canonical capability vocabulary.
+
+## [0.2.23] - 2026-06-19
+
+### Changed
+- Adopt `Legion::Extensions::Llm::Inventory::ScopedRefresher` mixin (lex-llm 0.6.0). Discovery
+  refresh actors now write directly to the live `Inventory` catalog via `Inventory.write_lane`.
+- Pin `lex-llm >= 0.6.0` and `legion-llm >= 0.14.0` in gemspec.
+- Standard `weight: 100` default added to provider instance settings schema.
+
 ## 0.2.21 - 2026-06-17
 
 ### Changed
