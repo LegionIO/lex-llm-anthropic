@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.27] - 2026-07-09
+
+### Fixed
+- **Claude models now advertise the `:thinking` capability.** `resolve_model_capabilities` passed `provider_catalog: {}` to `CapabilityPolicy.resolve`, so per-model capabilities from the shared lex-llm catalog (which correctly tags Claude 3.7 / 4+ models `reasoning` → `:thinking`, and vision) were ignored — Claude models reported only completion/streaming/tools, so the router's thinking filter could not route thinking requests correctly. It now consults the shared catalog via `catalog_capabilities(model_id)`; unknown models fall back to the provider envelope (no `:thinking`). No hardcoded capability list — the shared catalog (refreshed from provider APIs + models.dev) is the source of truth.
+
 ## [0.2.26] - 2026-06-20
 
 ### Fixed
