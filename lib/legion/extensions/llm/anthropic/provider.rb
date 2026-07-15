@@ -453,13 +453,36 @@ module Legion
           def resolve_model_capabilities(model_id)
             Legion::Extensions::Llm::CapabilityPolicy.resolve(
               real:              {},
-              provider_catalog:  {},
+              provider_catalog:  catalog_capabilities(model_id),
               probe:             {},
               provider_envelope: { streaming: true, tools: true },
               provider_config:   provider_capability_config,
               instance_config:   instance_capability_config,
               model_config:      model_capability_config(model_id)
             )
+          end
+
+          # Boolean capability hash for a model, read from the shared lex-llm
+          # catalog (models.dev-sourced). This is where Claude extended-thinking
+          # support (`reasoning` -> `:thinking`) is surfaced during discovery, so
+          # thinking-capable Claude models advertise `:thinking` and the router's
+          # thinking filter can route them. Unknown models return `{}`, falling
+          # back to the provider envelope. The catalog is the single source of
+          # truth for per-model capabilities across every provider.
+          def catalog_capabilities(model_id)
+            model = Legion::Extensions::Llm::Models.find(model_id, :anthropic)
+            Array(model&.capabilities).each_with_object({}) do |capability, result|
+              canonical = Legion::Extensions::Llm::Capabilities.canonical(capability)
+              next unless Legion::Extensions::Llm::CapabilityPolicy::OPTIONAL_CAPABILITIES.include?(canonical)
+
+              result[canonical] = true
+            end
+          rescue Legion::Extensions::Llm::ModelNotFoundError
+            {}
+          rescue StandardError => e
+            handle_exception(e, level: :warn, handled: true,
+                                operation: "#{slug}.catalog_capabilities", model: model_id)
+            {}
           end
 
           def infer_context_window(model_id)

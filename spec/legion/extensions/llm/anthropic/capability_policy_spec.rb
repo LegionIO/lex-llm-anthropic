@@ -30,14 +30,14 @@ RSpec.describe 'Anthropic CapabilityPolicy integration' do
     allow(credential_sources).to receive(:setting).with(:extensions, :llm, :anthropic).and_return(nil)
   end
 
-  describe 'default capabilities from provider_envelope' do
-    it 'includes streaming and tools but not vision or thinking' do
+  describe 'default capabilities from the shared catalog + provider_envelope' do
+    it 'includes streaming, tools, and the catalog capabilities (vision, thinking) for a Claude 4 model' do
       models = provider.send(:parse_list_models_response, http_response, :anthropic, nil)
       model = models.first
 
-      expect(model.capabilities).to include(:streaming, :tools, :completion)
-      expect(model.capabilities).not_to include(:vision)
-      expect(model.capabilities).not_to include(:thinking)
+      # claude-sonnet-4 is vision- and extended-thinking-capable per the shared
+      # lex-llm catalog, and streaming/tools come from the provider envelope.
+      expect(model.capabilities).to include(:streaming, :tools, :completion, :vision, :thinking)
     end
   end
 
@@ -49,7 +49,7 @@ RSpec.describe 'Anthropic CapabilityPolicy integration' do
       )
     end
 
-    it 'applies provider-level capability overrides' do
+    it 'applies provider-level capability overrides ahead of the catalog' do
       models = provider.send(:parse_list_models_response, http_response, :anthropic, nil)
       model = models.first
 
