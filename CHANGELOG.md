@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.28] - 2026-08-04
+
+### Changed
+- Align release metadata for the current Anthropic provider package.
+
 ## [0.2.27] - 2026-07-09
 
 ### Fixed
