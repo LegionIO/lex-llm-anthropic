@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.1] - 2026-08-13
+
+### Fixed
+- **§8 health firewall** — Removed the connection_failure → :instance_unavailable promotion from
+  `AnthropicSsotHarness#apply_anthropic_escalation`. Connection failures, timeouts, 529
+  `overloaded_error`, and generic 5xx are all request-local and must never mutate global instance
+  availability. Added `AnthropicExplicitUnavailableError` as the explicit service-unavailable signal
+  for conformance harness testing; rewrote the firewall assertion to prove `Faraday::ConnectionFailed`
+  stays `:connection_failure`, never `:instance_unavailable`.
+- **§9 default model injection removed** — `Translator#render_request` no longer injects
+  `'claude-sonnet-4'` when the canonical request carries no model. An omitted model is an empty
+  constraint, never a default; the Anthropic API will reject the request if required fields are absent.
+- **§2/§5 second publication engine removed** — `Provider#discover_offerings` no longer calls
+  `registry_publisher.publish_models_async`. The SSOT v3 `DiscoveryRefresh` actor is now the only
+  publication path. Removed the now-unused `discovery_registry_readiness` private method.
+- **§1 swallowed rescue removed** — Replaced `coordinator&.finish_probe rescue nil` with
+  explicit `begin/rescue` that calls `handle_exception` so finish_probe errors are logged and never
+  silently swallowed. Removed `# rubocop:disable Style/RescueModifier` inline annotations.
+- **§1 settings guards removed** — Eliminated `||` fallbacks and `.dig` guards on registered
+  settings in `DiscoveryRefresh`. Added `discovery_interval: 3600` as a registered default in
+  `Anthropic.default_settings`; all settings are now read through the standards-defined access path.
+
 ## [0.3.0] - 2026-08-13
 
 ### Changed

@@ -44,7 +44,7 @@ module Legion
             def generate_task?  = false
 
             def time
-              settings[:discovery_interval] || self.class.every_seconds
+              settings[:discovery_interval]
             end
 
             def manual
@@ -185,7 +185,12 @@ module Legion
 
               report_probe_result(instance_id:, probe_token:, readiness:)
             rescue StandardError => e
-              coordinator&.finish_probe rescue nil # rubocop:disable Style/RescueModifier
+              begin
+                coordinator&.finish_probe
+              rescue StandardError => finish_e
+                handle_exception(finish_e, level: :warn, operation: 'anthropic.actor.cadence_probe.finish_probe',
+                                            instance_id: instance_id)
+              end
               handle_exception(e, level: :warn, operation: 'anthropic.actor.cadence_probe',
                                   instance_id: instance_id)
             end
@@ -207,7 +212,12 @@ module Legion
 
               report_probe_result(instance_id:, probe_token:, readiness:)
             rescue StandardError => e
-              coordinator&.finish_probe(request: request) rescue nil # rubocop:disable Style/RescueModifier
+              begin
+                coordinator&.finish_probe(request: request)
+              rescue StandardError => finish_e
+                handle_exception(finish_e, level: :warn, operation: 'anthropic.actor.reactive_probe.finish_probe',
+                                            instance_id: instance_id)
+              end
               handle_exception(e, level: :warn, operation: 'anthropic.actor.reactive_probe',
                                   instance_id: instance_id)
             end
@@ -453,16 +463,11 @@ module Legion
               end
 
               if instances.empty?
-                api_key = settings[:anthropic_api_key] ||
-                          settings.dig(:credentials, :api_key) ||
-                          settings[:api_key]
-                endpoint = settings[:endpoint] ||
-                           settings[:anthropic_api_base] ||
-                           'https://api.anthropic.com'
+                api_key = settings[:credentials][:api_key]
                 instances[:primary] = {
                   anthropic_api_key:  api_key,
-                  anthropic_api_base: endpoint,
-                  tier:               settings[:tier] || :frontier
+                  anthropic_api_base: settings[:endpoint],
+                  tier:               settings[:tier]
                 }.compact
               end
 

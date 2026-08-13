@@ -73,9 +73,7 @@ module Legion
             return filter_cached_offerings(Array(@cached_offerings), filters) unless live
 
             provider_health = health(live:)
-            readiness = discovery_registry_readiness(provider_health, live:)
             @cached_offerings = Array(list_models(live:, **filters)).filter_map do |model|
-              self.class.registry_publisher.publish_models_async([model], readiness:)
               next unless model_matches_filters?(model, filters)
               next unless model_allowed?(model.id)
 
@@ -104,16 +102,6 @@ module Legion
           COMPLETION_BASE = [:completion].freeze
 
           private
-
-          def discovery_registry_readiness(provider_health, live:)
-            {
-              provider:   slug.to_sym,
-              configured: configured?,
-              ready:      provider_health[:ready] == true,
-              live:       live,
-              health:     provider_health
-            }
-          end
 
           def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:)
             log_render_payload(messages:, tools:, model:, stream:, schema:)

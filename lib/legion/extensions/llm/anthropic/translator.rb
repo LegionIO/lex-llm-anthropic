@@ -52,7 +52,7 @@ module Legion
             message_parts = render_messages(chat_messages, thinking: thinking_enabled?(canonical_request))
             tools = render_tools(canonical_request.tools)
             tool_choice = render_tool_choice(canonical_request.tool_choice)
-            model_id = canonical_request.metadata&.dig(:model) || 'claude-sonnet-4'
+            model_id = canonical_request.metadata&.dig(:model)
 
             base = {
               model:       model_id,

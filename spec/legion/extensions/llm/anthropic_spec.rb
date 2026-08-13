@@ -76,14 +76,13 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     expect(models.first.capabilities).to include(:completion, :streaming, :tools)
   end
 
-  it 'publishes discovered models asynchronously through the registry publisher' do
+  it 'does not publish models via the legacy registry publisher from discover_offerings (SSOT v3: actor is sole publisher)' do
     stub_registry_publisher
     stub_model_discovery
 
-    models = provider.list_models
     provider.discover_offerings(live: true)
 
-    expect_registry_publish(models)
+    expect(registry_publisher).not_to have_received(:publish_models_async)
   end
 
   it 'builds sanitized lex-llm registry events for Anthropic model availability' do

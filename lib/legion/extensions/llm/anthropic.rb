@@ -25,6 +25,7 @@ module Legion
               endpoint:           'https://api.anthropic.com',
               api_version:        '2023-10-16',
               default_max_tokens: 4096,
+              discovery_interval: 3600,
               tier:               :frontier,
               transport:          :http,
               credentials:        { api_key: 'env://ANTHROPIC_API_KEY' },

@@ -172,6 +172,14 @@ module AnthropicSsotEvidenceHelpers
   end
 end
 
+# Explicit service-unavailable signal for the Anthropic SSOT v3 conformance harness.
+# Only an explicit flat service/instance-unavailable response may map to :instance_unavailable
+# per §8. This error type represents such a response (e.g. a provider-level "service down"
+# administrative signal distinct from transient overload, timeout, or connection failure).
+# Faraday::ConnectionFailed, Faraday::TimeoutError, and Anthropic 529 overloaded_error
+# NEVER map to :instance_unavailable — they remain request-local outcomes.
+class AnthropicExplicitUnavailableError < StandardError; end
+
 # Harness class for Anthropic SSOT v3 conformance testing.
 class AnthropicSsotHarness
   include AnthropicSsotEvidenceHelpers
@@ -231,7 +239,10 @@ class AnthropicSsotHarness
   end
 
   def instance_unavailable_error
-    Faraday::ConnectionFailed.new('Connection refused - connect(2) for api.anthropic.com:443')
+    # An explicit, flat service/instance-unavailable signal (§8). Only this explicit
+    # provider-level signal may map to :instance_unavailable. Connection failures,
+    # timeouts, 529 overload errors, and generic 5xx are all request-local.
+    AnthropicExplicitUnavailableError.new('explicit flat service unavailable from provider')
   end
 
   def overloaded_error
@@ -249,9 +260,14 @@ class AnthropicSsotHarness
   private
 
   def apply_anthropic_escalation(outcome:, error:)
-    if outcome.kind == :connection_failure && error.is_a?(Faraday::ConnectionFailed)
+    # §8 health firewall: ONLY an explicit flat service/instance-unavailable signal
+    # (AnthropicExplicitUnavailableError) may transition to :instance_unavailable.
+    # Connection failures, timeouts, 529 overloaded_error, 503, and generic 5xx
+    # are ALL request-local — they must NEVER mutate global instance availability.
+    if error.is_a?(AnthropicExplicitUnavailableError)
       return Legion::Extensions::Llm::Routing::ProviderOutcome.new(
-        kind: :instance_unavailable, reason: outcome.reason
+        kind:   :instance_unavailable,
+        reason: error.message
       )
     end
 
@@ -617,10 +633,21 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
       expect(registry.snapshot.instance(instance_key: b[:key]).availability.state).to eq(:available)
     end
 
-    it 'normalizes connection failure as instance_unavailable through the harness' do
+    it 'normalizes an explicit service-unavailable signal to :instance_unavailable' do
       outcome = ssot_harness.normalize_dispatch_error(error: ssot_harness.instance_unavailable_error)
       expect(outcome).to be_a(Legion::Extensions::Llm::Routing::ProviderOutcome)
       expect(outcome.kind).to eq(:instance_unavailable)
+    end
+
+    it '§8 health firewall: connection failure stays :connection_failure, never :instance_unavailable' do
+      # §8: connection refusal/reset never mutates global availability.
+      # The production AnthropicCallable correctly returns :connection_failure;
+      # the harness must NOT escalate it to :instance_unavailable.
+      conn_error = Faraday::ConnectionFailed.new('Connection refused - connect(2) for api.anthropic.com:443')
+      outcome = ssot_harness.normalize_dispatch_error(error: conn_error)
+      expect(outcome).to be_a(Legion::Extensions::Llm::Routing::ProviderOutcome)
+      expect(outcome.kind).to eq(:connection_failure)
+      expect(outcome.kind).not_to eq(:instance_unavailable)
     end
 
     it 'normalizes 529 as overloaded, never as instance_unavailable' do
