@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'legion/extensions/llm/fleet/provider_responder'
+require 'legion/extensions/llm/inventory/registry'
 require 'legion/extensions/llm/anthropic'
 
 module Legion
@@ -18,6 +19,7 @@ module Legion
                 provider_family:    Anthropic::PROVIDER_FAMILY,
                 provider_class:     Anthropic::Provider,
                 provider_instances: -> { Anthropic.discover_instances },
+                registry:           Legion::Extensions::Llm::Inventory::Registry,
                 delivery:           delivery,
                 properties:         properties
               )

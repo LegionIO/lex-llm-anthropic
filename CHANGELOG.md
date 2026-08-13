@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.3.0] - 2026-08-13
+
+### Changed
+- **SSOT v3 provider migration** — Replaced the ScopedRefresher-based `DiscoveryRefresh` actor with a
+  full SSOT v3 actor backed by `Legion::Extensions::Llm::Inventory::Publisher`. The actor claims instances,
+  discovers models via safe `GET /v1/models` (no inference), runs readiness probing, and publishes complete
+  `OfferingDraft` snapshots atomically. Supports tick-based refresh and coalesced reactive probes via
+  `ProbeCoordinator` after dispatch-triggered `instance_unavailable` transitions.
+- **`AnthropicCallable`** — New callable wrapper implementing `disconnect` and
+  `normalize_dispatch_error(error:)`. Anthropic 529 `overloaded_error` is always `:overloaded`, never
+  `:instance_unavailable`. Only transport-layer `ConnectionFailed` maps to `:connection_failure` (which
+  the actor harness may escalate). 429 → `:rate_limited`, timeouts → `:timeout`.
+- **Instance identity** — Derived from normalized endpoint host:port + SHA256 8-char credential fingerprint
+  (`host:port/ak:XXXXXXXX`). Stable across restarts; deterministic from inputs.
+- **Operations** — chat/stream_chat: supported; embed/image/transcribe/translate/speak/moderate: unsupported;
+  count_tokens: unknown. Source evidence: `:provider_implementation` for supported/unsupported,
+  `:default_false` for unknown.
+- **Capabilities** — completion/streaming/tools/vision: supported (`:provider_implementation`); thinking:
+  unknown (`:default_false` unless model metadata indicates reasoning); embedding: unsupported.
+- **Removed** `DEFAULT_MODEL` constant, `resolve_default_model` method, and `default_model` injection
+  from `discover_instances`. No default model or provider in SSOT v3.
+- **Removed** `RegistryEventBuilder` — replaced by the common `Inventory::Publisher`.
+- **Fleet worker** — Added `registry: Legion::Extensions::Llm::Inventory::Registry` kwarg to
+  `ProviderResponder.call`.
+- **Gemspec** — Raised `lex-llm` floor to `>= 0.7.0`.
+- **Conformance spec** — Added `spec/legion/extensions/llm/anthropic_ssot_v3_conformance_spec.rb` with
+  `AnthropicSsotHarness` and `it_behaves_like 'an SSOT v3 provider adapter'` plus provider-specific
+  assertions (identity, 529-always-overloaded, two-instance lane isolation, ProbeCoordinator coalescing,
+  no DEFAULT_MODEL, no Legion::LLM reverse dependency).
+
 ## [0.2.28] - 2026-08-04
 
 ### Changed

@@ -26,7 +26,8 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Runners::FleetWorker do
       provider_class:     Legion::Extensions::Llm::Anthropic::Provider,
       provider_instances: satisfy { |resolver| resolver.call == instances },
       delivery:           delivery,
-      properties:         properties
+      properties:         properties,
+      registry:           Legion::Extensions::Llm::Inventory::Registry
     )
   end
 end
