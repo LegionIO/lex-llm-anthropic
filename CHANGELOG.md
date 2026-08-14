@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.2] - 2026-08-13
+
+### Fixed
+- **§1 settings guards removed (R2 pass)** — Eliminated remaining `||` fallbacks on registered
+  settings in `Provider#render_payload` (`|| 4096` on `settings[:default_max_tokens]`) and
+  `Translator#settings_default_max_tokens` / `#default_thinking_budget` / `#prompt_caching_settings`.
+  Registered `default_thinking_budget: 1024` as a canonical default in `Anthropic.default_settings`.
+  Replaced `Legion::Settings.dig(...)` + `|| {}` in `Translator#prompt_caching_settings` with direct
+  access via the registered default — `Translator#initialize` now seeds `@config` from the
+  registered instance defaults so all settings keys are always present without a Settings fallback.
+- **§2 dead second publication engine removed** — Deleted `attr_writer :registry_publisher` and the
+  `registry_publisher` class method from `Provider`. The artifact was non-functional (no callers)
+  but violated the single-publication-path invariant by keeping the old `RegistryPublisher`
+  reachable from the class interface.
+
 ## [0.3.1] - 2026-08-13
 
 ### Fixed

@@ -36,7 +36,11 @@ module Legion
 
           def capabilities = CAPABILITIES
           def config = @config || {}
-          def initialize(config = {}) = @config = config
+
+          def initialize(config = {})
+            instance_defaults = Legion::Extensions::Llm::Anthropic.default_settings[:instances][:default]
+            @config = instance_defaults.merge(config.to_h)
+          end
 
           # Render: Canonical::Request to Anthropic wire Hash.
           def render_request(canonical_request)
@@ -383,7 +387,7 @@ module Legion
           end
 
           def default_thinking_budget
-            @config[:default_thinking_budget] || 1024
+            @config[:default_thinking_budget]
           end
 
           # --- response_format ---
@@ -660,15 +664,13 @@ module Legion
           end
 
           def prompt_caching_settings
-            return @config[:prompt_caching] if @config.key?(:prompt_caching)
-
-            Legion::Settings.dig(:extensions, :llm, :anthropic, :prompt_caching) || {}
+            @config[:prompt_caching]
           end
 
           # --- settings helpers ---
 
           def settings_default_max_tokens
-            @config[:default_max_tokens] || 4096
+            @config[:default_max_tokens]
           end
         end
       end

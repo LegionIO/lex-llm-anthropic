@@ -12,16 +12,10 @@ module Legion
           include Legion::Logging::Helper
 
           class << self
-            attr_writer :registry_publisher
-
             def slug = 'anthropic'
             def configuration_options = %i[anthropic_api_key anthropic_api_base anthropic_version]
             def configuration_requirements = %i[anthropic_api_key]
             def capabilities = Capabilities
-
-            def registry_publisher
-              @registry_publisher ||= Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :anthropic)
-            end
           end
 
           # Capability predicates for Anthropic chat model offerings.
@@ -115,7 +109,7 @@ module Legion
               model:         model.id,
               messages:      format_messages(chat_messages, thinking: thinking_enabled?(thinking), cacheable_count:),
               stream:        stream,
-              max_tokens:    model.max_tokens || settings[:default_max_tokens] || 4096,
+              max_tokens:    model.max_tokens || settings[:default_max_tokens],
               system:        system_content(system_messages, cache: caching),
               thinking:      thinking_payload(thinking),
               temperature:   temperature,
