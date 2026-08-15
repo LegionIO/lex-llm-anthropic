@@ -40,7 +40,7 @@ module Legion
           def headers
             identity_headers.merge({
               'x-api-key'         => config.anthropic_api_key,
-              'anthropic-version' => config.anthropic_version || settings[:api_version] || '2023-06-01'
+              'anthropic-version' => config.anthropic_version || settings.dig(:instances, :default, :api_version)
             }.compact)
           end
 
@@ -109,7 +109,7 @@ module Legion
               model:         model.id,
               messages:      format_messages(chat_messages, thinking: thinking_enabled?(thinking), cacheable_count:),
               stream:        stream,
-              max_tokens:    model.max_tokens || settings[:default_max_tokens],
+              max_tokens:    model.max_tokens || default_max_tokens,
               system:        system_content(system_messages, cache: caching),
               thinking:      thinking_payload(thinking),
               temperature:   temperature,
@@ -117,6 +117,14 @@ module Legion
               tool_choice:   tool_choice(tool_prefs),
               output_config: output_config(schema)
             }.compact
+          end
+
+          # The Messages API requires max_tokens on every request. /v1/models
+          # metadata does not carry it, so models discovered live fall back to
+          # the registered instance default (nested under instances.default,
+          # mirroring the Translator read — the top-level key does not exist).
+          def default_max_tokens
+            settings.dig(:instances, :default, :default_max_tokens)
           end
 
           def log_render_payload(messages:, tools:, model:, stream:, schema:)

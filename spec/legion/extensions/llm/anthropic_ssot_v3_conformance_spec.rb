@@ -17,100 +17,6 @@ require 'legion/extensions/llm/capabilities'
 require 'legion/extensions/llm/fleet/worker_execution'
 require 'legion/extensions/llm/fleet/protocol'
 
-# Stub the actor runtime so discovery_refresh.rb loads the AnthropicCallable class.
-module Legion
-  module Extensions
-    module Actors
-      unless const_defined?(:Every, false)
-        # Stub base class for discovery actor loading in test context
-        class Every
-          def self.every_seconds = 3600
-        end
-      end
-    end
-
-    module Helpers
-      module Lex; end unless const_defined?(:Lex, false)
-    end
-  end
-end
-
-# Use `load` (not `require`) because spec_helper already loaded the actor file
-# before the Every stub existed, so the `return unless` guard skipped it.
-# `load` forces re-execution so AnthropicCallable becomes defined.
-load File.expand_path('../../../../lib/legion/extensions/llm/anthropic/actors/discovery_refresh.rb', __dir__)
-
-# Test-local callable that extends AnthropicCallable with dispatch operations
-# required by FleetWorkerExecution. Tracks inference call count for conformance
-# assertions. The production AnthropicCallable will gain these methods during
-# the migration; this subclass proves the contract.
-class TrackingAnthropicCallable < Legion::Extensions::Llm::Anthropic::Actor::AnthropicCallable
-  attr_reader :call_count
-
-  def initialize(instance_cfg:, logger:)
-    super
-    @call_count = 0
-  end
-
-  def chat(model:, **)
-    @call_count += 1
-    { role: 'assistant', content: 'test response', model: model }
-  end
-
-  def stream_chat(model:, **)
-    @call_count += 1
-    { role: 'assistant', content: 'streamed response', model: model }
-  end
-
-  def count_tokens(model:, **)
-    @call_count += 1
-    { token_count: 42, model: model }
-  end
-
-  # Extended normalize_dispatch_error covering lex-llm error types.
-  def normalize_dispatch_error(error:)
-    reason = error.message.to_s[0, 512]
-    kind = classify_dispatch_error(error: error)
-    Legion::Extensions::Llm::Routing::ProviderOutcome.new(
-      kind:   kind,
-      reason: reason.empty? ? 'unknown dispatch error' : reason
-    )
-  end
-
-  private
-
-  def classify_dispatch_error(error:)
-    case error
-    when Faraday::ConnectionFailed then :connection_failure
-    when Faraday::TimeoutError then :timeout
-    when Faraday::ClientError then classify_client_error_ext(error: error)
-    when Faraday::ServerError then classify_server_error_ext(error: error)
-    when Legion::Extensions::Llm::OverloadedError then :overloaded
-    else :provider_error
-    end
-  end
-
-  def classify_client_error_ext(error:)
-    status = error.respond_to?(:response_status) ? error.response_status : nil
-    case status
-    when 401 then :authentication
-    when 403 then :authorization
-    when 404 then :model_missing
-    when 429 then :rate_limited
-    else :invalid_request
-    end
-  end
-
-  def classify_server_error_ext(error:)
-    # Anthropic 529 overloaded_error -> :overloaded, NEVER :instance_unavailable
-    status = error.respond_to?(:response_status) ? error.response_status : nil
-    case status
-    when 503, 529 then :overloaded
-    else :provider_error
-    end
-  end
-end
-
 # Evidence-building helpers for the SSOT v3 Anthropic conformance harness.
 module AnthropicSsotEvidenceHelpers
   private
@@ -197,6 +103,20 @@ class AnthropicSsotHarness
     }.freeze
   ].freeze
 
+  # Wire body of a successful Anthropic Messages API response, used by the
+  # stubbed dispatch path (the production callable delegates to a real
+  # Anthropic::Provider whose base Connection is stubbed at Connection#post).
+  MESSAGES_RESPONSE_BODY = {
+    'id'            => 'msg_ssot_conformance',
+    'type'          => 'message',
+    'role'          => 'assistant',
+    'content'       => [{ 'type' => 'text', 'text' => 'ssot conformance response' }],
+    'model'         => 'claude-sonnet-4-6',
+    'stop_reason'   => 'end_turn',
+    'stop_sequence' => nil,
+    'usage'         => { 'input_tokens' => 10, 'output_tokens' => 5 }
+  }.freeze
+
   def provider_family = :anthropic
   def instance_configs = INSTANCE_CONFIGS
 
@@ -210,8 +130,20 @@ class AnthropicSsotHarness
     "#{host_port}/ak:#{::Digest::SHA256.hexdigest(api_key)[0, 8]}"
   end
 
+  # The harness uses the PRODUCTION callable. Dispatch counting works through
+  # the real delegation path: the callable wraps a per-instance Provider whose
+  # base Connection#post is stubbed by the spec and counted per provider
+  # object via record_dispatch.
   def build_callable(instance_config:)
-    TrackingAnthropicCallable.new(instance_cfg: instance_config, logger: Logger.new(File::NULL))
+    Legion::Extensions::Llm::Anthropic::Actor::AnthropicCallable.new(
+      instance_cfg: instance_config,
+      logger:       Logger.new(File::NULL)
+    )
+  end
+
+  def record_dispatch(provider)
+    @dispatch_counts ||= Hash.new(0)
+    @dispatch_counts[provider] += 1
   end
 
   def build_offering_drafts(tier: :frontier, **)
@@ -229,7 +161,9 @@ class AnthropicSsotHarness
   end
 
   def inference_call_count(callable:)
-    callable.respond_to?(:call_count) ? callable.call_count : 0
+    @dispatch_counts ||= Hash.new(0)
+    provider = callable.provider
+    provider.nil? ? 0 : @dispatch_counts[provider]
   end
 
   def normalize_dispatch_error(error:)
@@ -303,7 +237,17 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   let(:ssot_harness) { AnthropicSsotHarness.new }
   let(:registry) { Legion::Extensions::Llm::Inventory::Registry }
 
-  before { registry.reset! }
+  before do
+    registry.reset!
+    allow_any_instance_of(Legion::Extensions::Llm::Connection).to receive(:post) do |connection, *_args, &_block|
+      ssot_harness.record_dispatch(connection.provider)
+      env = Faraday::Env.new
+      env.status = 200
+      env.response = { headers: {} }
+      env.body = AnthropicSsotHarness::MESSAGES_RESPONSE_BODY.dup
+      Faraday::Response.new(env)
+    end
+  end
 
   it_behaves_like 'an SSOT v3 provider adapter'
 
@@ -1033,7 +977,35 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
       long_message = 'x' * 1000
       error = RuntimeError.new(long_message)
       outcome = callable.normalize_dispatch_error(error: error)
-      expect(outcome.reason.length).to be <= 1024
+      expect(outcome.reason.length).to eq(512)
+    end
+
+    # D15: both the fleet WorkerExecution and legion-llm SelectionDispatch pass
+    # the offering model as a RAW STRING, but render_payload calls model.id /
+    # model.max_tokens (Model::Info). The callable must wrap at the boundary —
+    # the render path is exercised here for real (only Connection#post is
+    # stubbed), so a missing wrap fails with NoMethodError, not a green stub.
+    context 'raw-string model dispatch (D15)' do
+      it 'wraps a raw string into a Model::Info and renders without NoMethodError' do
+        result = callable.chat(
+          messages: [Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')],
+          model:    'claude-sonnet-4-6'
+        )
+        expect(result).to be_a(Legion::Extensions::Llm::Message)
+        expect(ssot_harness.inference_call_count(callable: callable)).to eq(1)
+      end
+
+      it 'pass-throughs a model that already responds to :id' do
+        info = Legion::Extensions::Llm::Model::Info.new(id: 'claude-sonnet-4-6', provider: :anthropic)
+        expect(callable.send(:normalize_model, info)).to equal(info)
+      end
+
+      it 'wraps every dispatch op through the same boundary' do
+        info = callable.send(:normalize_model, 'claude-sonnet-4-6')
+        expect(info).to be_a(Legion::Extensions::Llm::Model::Info)
+        expect(info.id).to eq('claude-sonnet-4-6')
+        expect(info.provider).to eq(:anthropic)
+      end
     end
   end
 

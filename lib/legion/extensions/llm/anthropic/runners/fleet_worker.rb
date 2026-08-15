@@ -10,18 +10,22 @@ module Legion
       module Anthropic
         module Runners
           # Runner entrypoint for Anthropic fleet request execution.
+          #
+          # Invoked by the Subscription actor as
+          # `runner_class.send(runner_function, **message)` — the decoded
+          # envelope (symbol keys) merged with delivery metadata. The envelope
+          # itself is the responder payload; the actor acks the AMQP delivery
+          # after this returns.
           module FleetWorker
             module_function
 
-            def handle_fleet_request(payload, delivery: nil, properties: nil)
+            def handle_fleet_request(**message)
               Legion::Extensions::Llm::Fleet::ProviderResponder.call(
-                payload:            payload,
+                payload:            message,
                 provider_family:    Anthropic::PROVIDER_FAMILY,
                 provider_class:     Anthropic::Provider,
                 provider_instances: -> { Anthropic.discover_instances },
-                registry:           Legion::Extensions::Llm::Inventory::Registry,
-                delivery:           delivery,
-                properties:         properties
+                registry:           Legion::Extensions::Llm::Inventory::Registry
               )
             end
           end

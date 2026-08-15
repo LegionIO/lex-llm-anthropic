@@ -1,22 +1,31 @@
 # frozen_string_literal: true
 
 require 'digest'
+require 'time'
 require 'uri'
+require 'faraday'
 
-begin
-  require 'legion/extensions/actors/every'
-rescue LoadError => e
-  warn(e.message) if $VERBOSE
-end
-
+require 'legion/logging/helper'
+require 'legion/extensions/llm/anthropic/provider'
 require 'legion/extensions/llm/inventory/publisher'
 require 'legion/extensions/llm/inventory/identity'
 require 'legion/extensions/llm/inventory/records'
 require 'legion/extensions/llm/inventory/evidence'
 require 'legion/extensions/llm/inventory/probe_coordinator'
+require 'legion/extensions/llm/inventory/scoped_refresher'
 require 'legion/extensions/llm/routing/provider_outcome'
 require 'legion/extensions/llm/taxonomies'
 require 'legion/extensions/llm/capabilities'
+
+actor_load_logger = Object.new.extend(Legion::Logging::Helper)
+actor_load_logger.define_singleton_method(:lex_filename) { 'llm_anthropic' }
+
+begin
+  require 'legion/extensions/actors/every'
+rescue LoadError => e
+  actor_load_logger.handle_exception(e, level: :warn, handled: true,
+                                          operation: 'anthropic.actor.discovery_refresh.load')
+end
 
 return unless defined?(Legion::Extensions::Actors::Every)
 
@@ -30,11 +39,18 @@ module Legion
           # probes readiness via GET /v1/models, and publishes complete OfferingDraft
           # snapshots through Inventory::Publisher. Supports coalesced reactive probes
           # after dispatch-triggered instance_unavailable transitions.
+          #
+          # Per-instance runtime state (publisher token, ProbeCoordinator, sequence,
+          # last offerings) lives in process-local memory behind a mutex — never in
+          # Legion::Settings. The only settings writes are the plain-data health
+          # display hash and capabilities list written after each registry commit.
           class DiscoveryRefresh < Legion::Extensions::Actors::Every
             include Legion::Extensions::Helpers::Lex
             include Legion::Logging::Helper
 
-            def self.every_seconds = 3600
+            # Per-instance capabilities advertised in the settings health display,
+            # mirroring the legacy discover_instances output.
+            INSTANCE_CAPABILITIES = %i[completion streaming vision tools].freeze
 
             def runner_class    = self.class
             def runner_function = 'manual'
@@ -43,8 +59,13 @@ module Legion
             def check_subtask?  = false
             def generate_task?  = false
 
+            # Registered per-instance discovery cadence (nested under
+            # instances.default by provider_settings). Never nil: the live
+            # setting is registered with a default, and the registered default
+            # is the floor if an operator nulls the live value.
             def time
-              settings[:discovery_interval]
+              settings.dig(:instances, :default, :discovery_interval) ||
+                Legion::Extensions::Llm::Anthropic.default_settings.dig(:instances, :default, :discovery_interval)
             end
 
             def manual
@@ -68,14 +89,36 @@ module Legion
 
             # ── Publisher ──────────────────────────────────────────────────────
 
+            # The compatibility adapter projects committed snapshots into the old
+            # coordinator inventory store for the mixed-version window; it
+            # degrades to :not_loaded when that coordinator is not loaded.
             def publisher
-              @publisher ||= Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :anthropic)
+              @publisher ||= Legion::Extensions::Llm::Inventory::Publisher.new(
+                provider_family:       :anthropic,
+                compatibility_adapter:
+                                       Legion::Extensions::Llm::Inventory::ScopedRefresher::LegacyCoordinatorAdapter.new(
+                                         provider_family: :anthropic
+                                       )
+              )
+            end
+
+            # ── Instance state (process-local memory, mutex-guarded) ─────────
+
+            def state_mutex
+              @state_mutex ||= Mutex.new
+            end
+
+            def with_instance_states
+              state_mutex.synchronize do
+                @instance_states ||= {}
+                yield @instance_states
+              end
             end
 
             # ── Initial discovery ─────────────────────────────────────────────
 
             def initial_discovery
-              @instance_states = {}
+              with_instance_states { @instance_states = {} }
               configured_instances.each do |name, instance_cfg|
                 claim_and_activate_instance(name:, instance_cfg:)
               rescue StandardError => e
@@ -118,30 +161,66 @@ module Legion
                   sequence:        0,
                   probe_token:     probe_token
                 )
+                write_instance_display(name: name, ready: true, reason: readiness.reason)
               else
                 publisher.readiness_failed(
                   instance_id: instance_id,
                   probe_token: probe_token,
                   reason:      readiness.reason
                 )
+                write_instance_display(name: name, ready: false, reason: readiness.reason)
               end
 
-              @instance_states[instance_id] = {
-                name:              name,
-                instance_key:      instance_key,
-                instance_cfg:      instance_cfg,
-                callable:          callable,
-                probe_coordinator: probe_coordinator,
-                publisher_token:   publisher_token,
-                sequence:          0,
-                offerings:         offerings
-              }
+              with_instance_states do
+                @instance_states[instance_id] = {
+                  name:              name,
+                  instance_key:      instance_key,
+                  instance_cfg:      instance_cfg,
+                  callable:          callable,
+                  probe_coordinator: probe_coordinator,
+                  publisher_token:   publisher_token,
+                  sequence:          0,
+                  offerings:         offerings,
+                  signature:         offering_signature(offerings)
+                }
+              end
             end
 
             # ── Tick refresh ──────────────────────────────────────────────────
 
             def tick_refresh
-              @instance_states.each do |instance_id, state|
+              reconcile_instances
+              refresh_tracked_instances
+            end
+
+            # Re-scan configured instances each tick so instances added or removed
+            # after boot (late credentials, settings reload) are claimed or retired
+            # without a process restart.
+            def reconcile_instances
+              configured = configured_instances
+              current_names = configured.keys
+
+              gone = with_instance_states do |states|
+                states.reject { |_instance_id, state| current_names.include?(state[:name]) }
+              end
+              gone.each_value { |state| retire_instance(state) }
+
+              to_claim = with_instance_states do |states|
+                configured.reject { |name, _cfg| states.values.any? { |state| state[:name] == name } }
+              end
+              to_claim.each do |name, instance_cfg|
+                claim_and_activate_instance(name:, instance_cfg:)
+              rescue StandardError => e
+                handle_exception(e, level: :warn, operation: 'anthropic.actor.claim_instance',
+                                    instance_name: name.to_s)
+              end
+            rescue StandardError => e
+              handle_exception(e, level: :warn, operation: 'anthropic.actor.reconcile_instances')
+            end
+
+            def refresh_tracked_instances
+              tracked = with_instance_states { @instance_states.dup }
+              tracked.each do |instance_id, state|
                 refresh_instance(instance_id:, state:)
               rescue StandardError => e
                 handle_exception(e, level: :warn, operation: 'anthropic.actor.refresh_instance',
@@ -150,23 +229,85 @@ module Legion
             end
 
             def refresh_instance(instance_id:, state:)
+              status = publisher.snapshot.publication_status(instance_key: state[:instance_key])
+              return if status.nil?
+
+              if status.state == :initializing
+                retry_initial_activation(instance_id:, state:)
+              else
+                replace_changed_offerings(instance_id:, state:)
+                run_cadence_probe(instance_id:, state:)
+              end
+            end
+
+            # Recovery for an instance that failed its initial readiness probe:
+            # while the publication is still :initializing a passing probe
+            # re-activates the snapshot (readiness_succeeded is illegal before
+            # activation, so the activation path is used, not a probe success).
+            def retry_initial_activation(instance_id:, state:)
+              offerings = discover_offerings_for_instance(
+                instance_cfg: state[:instance_cfg],
+                instance_key: state[:instance_key]
+              )
+              probe_token = publisher.readiness_probe_started(
+                instance_id:     instance_id,
+                publisher_token: state[:publisher_token]
+              )
+              readiness = check_readiness(instance_cfg: state[:instance_cfg])
+
+              if readiness.ready?
+                publisher.activate_instance_snapshot(
+                  instance_id:     instance_id,
+                  publisher_token: state[:publisher_token],
+                  offerings:       offerings,
+                  sequence:        0,
+                  probe_token:     probe_token
+                )
+                with_instance_states do
+                  state[:offerings] = offerings
+                  state[:signature] = offering_signature(offerings)
+                end
+                write_instance_display(name: state[:name], ready: true, reason: readiness.reason)
+              else
+                publisher.readiness_failed(
+                  instance_id: instance_id,
+                  probe_token: probe_token,
+                  reason:      readiness.reason
+                )
+                write_instance_display(name: state[:name], ready: false, reason: readiness.reason)
+              end
+            end
+
+            # Compare offering identity (model + tier), not Data#==: the evidence
+            # observed_at timestamps change every scan and would otherwise force a
+            # generation-bumping replace on every tick with no real change.
+            def replace_changed_offerings(instance_id:, state:)
               new_offerings = discover_offerings_for_instance(
                 instance_cfg: state[:instance_cfg],
                 instance_key: state[:instance_key]
               )
+              new_signature = offering_signature(new_offerings)
+              return if new_signature == state[:signature]
 
-              if new_offerings != state[:offerings]
+              sequence = with_instance_states do
                 state[:sequence] += 1
-                publisher.replace_instance_snapshot(
-                  instance_id:     instance_id,
-                  publisher_token: state[:publisher_token],
-                  offerings:       new_offerings,
-                  sequence:        state[:sequence]
-                )
-                state[:offerings] = new_offerings
+                state[:sequence]
               end
+              publisher.replace_instance_snapshot(
+                instance_id:     instance_id,
+                publisher_token: state[:publisher_token],
+                offerings:       new_offerings,
+                sequence:        sequence
+              )
+              with_instance_states do
+                state[:offerings] = new_offerings
+                state[:signature] = new_signature
+              end
+              write_instance_display(name: state[:name], ready: true, reason: 'offerings refreshed')
+            end
 
-              run_cadence_probe(instance_id:, state:)
+            def offering_signature(offerings)
+              offerings.map { |offering| [offering.model, offering.tier] }.sort.freeze
             end
 
             # ── Readiness probing ─────────────────────────────────────────────
@@ -183,7 +324,7 @@ module Legion
               readiness = check_readiness(instance_cfg: state[:instance_cfg])
               coordinator.finish_probe
 
-              report_probe_result(instance_id:, probe_token:, readiness:)
+              report_probe_result(instance_id:, state:, probe_token:, readiness:)
             rescue StandardError => e
               begin
                 coordinator&.finish_probe
@@ -196,7 +337,7 @@ module Legion
             end
 
             def handle_reactive_probe(instance_id:, request:)
-              state = @instance_states[instance_id]
+              state = with_instance_states { @instance_states[instance_id] }
               return unless state
 
               coordinator = state[:probe_coordinator]
@@ -210,7 +351,7 @@ module Legion
               readiness = check_readiness(instance_cfg: state[:instance_cfg])
               coordinator.finish_probe(request: request)
 
-              report_probe_result(instance_id:, probe_token:, readiness:)
+              report_probe_result(instance_id:, state:, probe_token:, readiness:)
             rescue StandardError => e
               begin
                 coordinator&.finish_probe(request: request)
@@ -222,15 +363,17 @@ module Legion
                                   instance_id: instance_id)
             end
 
-            def report_probe_result(instance_id:, probe_token:, readiness:)
+            def report_probe_result(instance_id:, state:, probe_token:, readiness:)
               if readiness.ready?
                 publisher.readiness_succeeded(instance_id: instance_id, probe_token: probe_token)
+                write_instance_display(name: state[:name], ready: true, reason: readiness.reason)
               else
                 publisher.readiness_failed(
                   instance_id: instance_id,
                   probe_token: probe_token,
                   reason:      readiness.reason
                 )
+                write_instance_display(name: state[:name], ready: false, reason: readiness.reason)
               end
             end
 
@@ -433,45 +576,76 @@ module Legion
             # ── Graceful shutdown ─────────────────────────────────────────────
 
             def remove_all_instances
-              return unless @instance_states
+              tracked = with_instance_states { @instance_states.dup }
+              tracked.each_value { |state| retire_instance(state) }
+              with_instance_states { @instance_states.clear }
+            end
 
-              @instance_states.each do |instance_id, state|
-                publisher.remove_instance(
-                  instance_id:     instance_id,
-                  publisher_token: state[:publisher_token]
-                )
-              rescue StandardError => e
-                handle_exception(e, level: :warn, operation: 'anthropic.actor.remove_instance',
-                                    instance_id: instance_id)
-              end
-              @instance_states.clear
+            # Retire one instance: remove it from the registry, drop the local
+            # state, clear its settings display, and close its callable.
+            def retire_instance(state)
+              instance_id = state[:instance_key].instance_id
+              publisher.remove_instance(
+                instance_id:     instance_id,
+                publisher_token: state[:publisher_token]
+              )
+              with_instance_states { @instance_states.delete(instance_id) }
+              clear_instance_display(name: state[:name])
+              state[:callable]&.disconnect
+            rescue StandardError => e
+              handle_exception(e, level: :warn, operation: 'anthropic.actor.retire_instance',
+                                  instance_id: instance_id)
             end
 
             # ── Configuration ─────────────────────────────────────────────────
 
+            # Only instances the operator (or the merged provider defaults)
+            # actually configured are claimable. Instances with enabled: false
+            # or without a resolvable credential are skipped with a log —
+            # claiming a credential-less instance would probe unauthenticated
+            # and never activate.
             def configured_instances
               instances = {}
-
               cfg_instances = settings[:instances]
-              if cfg_instances.is_a?(Hash)
-                cfg_instances.each do |name, config|
-                  instances[name.to_sym] = normalize_instance_config(config: config)
-                rescue StandardError => e
-                  handle_exception(e, level: :warn, operation: 'anthropic.actor.normalize_instance',
-                                      instance_name: name.to_s)
-                end
-              end
+              return instances unless cfg_instances.is_a?(Hash)
 
-              if instances.empty?
-                api_key = settings[:credentials][:api_key]
-                instances[:primary] = {
-                  anthropic_api_key:  api_key,
-                  anthropic_api_base: settings[:endpoint],
-                  tier:               settings[:tier]
-                }.compact
+              cfg_instances.each do |name, config|
+                normalized = claimable_instance_config(config:)
+                instances[name.to_sym] = normalized unless normalized.nil?
+              rescue StandardError => e
+                handle_exception(e, level: :warn, operation: 'anthropic.actor.normalize_instance',
+                                    instance_name: name.to_s)
               end
 
               instances
+            end
+
+            def claimable_instance_config(config:)
+              return nil unless config.is_a?(Hash)
+
+              normalized = normalize_instance_config(config: config)
+              return nil if normalized[:enabled] == false
+
+              api_key = resolved_api_key(normalized[:anthropic_api_key])
+              if api_key.nil?
+                log.warn('[anthropic][actor] action=skip_instance reason=missing_credential')
+                return nil
+              end
+
+              normalized[:anthropic_api_key] = api_key
+              normalized
+            end
+
+            # env:// references resolve through the canonical credential source
+            # helper; an unset variable resolves to nil (credential-less).
+            def resolved_api_key(api_key)
+              return nil unless api_key.is_a?(String) && !api_key.strip.empty?
+
+              if api_key.start_with?('env://')
+                Legion::Extensions::Llm::CredentialSources.env(api_key.delete_prefix('env://'))
+              else
+                api_key
+              end
             end
 
             def normalize_instance_config(config:)
@@ -489,10 +663,39 @@ module Legion
               normalized
             end
 
+            # ── Settings health display (plain data, display only) ──────────
+            # Written after each registry commit (activate, replace, probe,
+            # remove) so the API namespaces can render instance health. Routing
+            # authority remains the in-memory Registry AvailabilityFact.
+
+            def write_instance_display(name:, ready:, reason:)
+              entry = settings.dig(:instances, name)
+              return unless entry.is_a?(Hash)
+
+              entry[:health] = {
+                circuit_state:      ready ? :closed : :open,
+                denied:             false,
+                available:          ready,
+                adjustment:         ready ? 0 : -50,
+                reason:             reason.to_s,
+                observed_at:        ::Time.now.utc.iso8601,
+                last_probe_outcome: ready ? :success : :failure,
+                source:             :ssot_v3
+              }
+              entry[:capabilities] = INSTANCE_CAPABILITIES
+            end
+
+            def clear_instance_display(name:)
+              entry = settings.dig(:instances, name)
+              return unless entry.is_a?(Hash)
+
+              entry.delete(:health)
+              entry.delete(:capabilities)
+            end
+
             # ── HTTP connections ───────────────────────────────────────────────
 
             def build_api_connection(base_url:, instance_cfg:)
-              require 'faraday'
               Faraday.new(url: base_url) do |f|
                 f.options.timeout = 15
                 f.options.open_timeout = 5
@@ -507,31 +710,74 @@ module Legion
               return unless api_key.is_a?(String) && !api_key.strip.empty?
 
               faraday.headers['x-api-key'] = api_key
-              faraday.headers['anthropic-version'] = instance_cfg[:anthropic_version] || '2023-10-16'
+              faraday.headers['anthropic-version'] =
+                instance_cfg[:api_version] || instance_cfg[:anthropic_version] || '2023-10-16'
             end
           end
 
           # Callable wrapper for an Anthropic provider instance. Implements the
+          # fleet dispatch operations (chat, stream_chat, embed, count_tokens) by
+          # delegating to a per-instance Anthropic::Provider, plus the
           # `disconnect` and `normalize_dispatch_error(error:)` contracts required
           # by Inventory::CallableHandle and Routing::ProviderOutcome.
+          #
+          # Dispatch errors propagate unmodified so the coordinator can classify
+          # them through normalize_dispatch_error.
           #
           # CRITICAL: Anthropic 529 overloaded_error is ALWAYS :overloaded.
           # It is NEVER :instance_unavailable. Only explicit connection failures
           # at the transport layer map to :connection_failure (which the actor's
           # harness may escalate to :instance_unavailable).
           class AnthropicCallable
+            # Provider dispatch kwargs the base Provider accepts by name. Any
+            # other fleet param is merged into the provider `params:` passthrough,
+            # which the base Provider deep-merges into the rendered payload.
+            CHAT_PROVIDER_KEYS = %i[tools temperature params headers schema thinking tool_prefs].freeze
+            EMBED_PROVIDER_KEYS = %i[dimensions params headers].freeze
+
             def initialize(instance_cfg:, logger:)
               @instance_cfg = instance_cfg
               @logger = logger
+              @provider_mutex = Mutex.new
               @disconnected = false
+            end
+
+            # The wrapped per-instance provider (built lazily on first dispatch).
+            def provider
+              @provider_mutex.synchronize do
+                @provider ||= build_provider
+              end
             end
 
             def disconnected?
               @disconnected
             end
 
+            def chat(messages:, model:, **rest)
+              provider.chat(messages: messages, model: normalize_model(model),
+                                            **dispatch_kwargs(rest, known: CHAT_PROVIDER_KEYS))
+            end
+
+            def stream_chat(messages:, model:, **rest, &)
+              provider.stream_chat(messages: messages, model: normalize_model(model),
+                                              **dispatch_kwargs(rest, known: CHAT_PROVIDER_KEYS), &)
+            end
+
+            def embed(text:, model:, **rest)
+              provider.embed(text: text, model: normalize_model(model),
+                                       **dispatch_kwargs(rest, known: EMBED_PROVIDER_KEYS))
+            end
+
+            def count_tokens(messages:, model:, **rest)
+              provider.count_tokens(messages: messages, model: normalize_model(model), params: rest)
+            end
+
             def disconnect
-              @disconnected = true
+              @provider_mutex.synchronize do
+                @disconnected = true
+                @provider&.disconnect
+                @provider = nil
+              end
               @logger.debug { '[anthropic][callable] disconnected' }
             end
 
@@ -560,6 +806,28 @@ module Legion
             end
 
             private
+
+            def build_provider
+              Legion::Extensions::Llm::Anthropic::Provider.new(@instance_cfg)
+            end
+
+            # The fleet envelope carries the model as a String; the base
+            # Provider renders against a Model::Info. Wrap at the boundary.
+            def normalize_model(model)
+              return model if model.respond_to?(:id)
+
+              Legion::Extensions::Llm::Model::Info.new(id: model.to_s, provider: :anthropic)
+            end
+
+            def dispatch_kwargs(rest, known:)
+              known_part = rest.slice(*known)
+              extra = rest.except(*known)
+              return known_part if extra.empty?
+
+              base_params = known_part[:params]
+              merged = base_params.is_a?(Hash) ? base_params.merge(extra) : extra
+              known_part.merge(params: merged)
+            end
 
             def classify_client_error(error:)
               status = error.respond_to?(:response_status) ? error.response_status : nil

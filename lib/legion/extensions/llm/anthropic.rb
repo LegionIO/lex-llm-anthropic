@@ -5,7 +5,7 @@ require 'legion/logging/helper'
 require 'legion/extensions/llm/anthropic/provider'
 require 'legion/extensions/llm/anthropic/translator'
 require 'legion/extensions/llm/anthropic/version'
-require_relative 'anthropic/actors/discovery_refresh'
+require 'legion/extensions/llm/anthropic/actors/discovery_refresh'
 
 module Legion
   module Extensions
