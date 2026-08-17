@@ -52,6 +52,13 @@ module Legion
             # mirroring the legacy discover_instances output.
             INSTANCE_CAPABILITIES = %i[completion streaming vision tools].freeze
 
+            # Config names the inventory foundation reserves as InstanceKey
+            # instance_id values. "default" is the synthetic settings bucket
+            # (discovery_interval is registered under instances.default); a
+            # reserved name can never be claimed — InstanceKey raises
+            # ValidationError for it.
+            RESERVED_INSTANCE_NAMES = %w[default].freeze
+
             def runner_class    = self.class
             def runner_function = 'manual'
             def run_now?        = true
@@ -127,9 +134,13 @@ module Legion
             end
 
             def claim_and_activate_instance(name:, instance_cfg:)
-              instance_id = derive_instance_id(instance_cfg:)
+              # Identity is the operator's config NAME (the key the router
+              # resolves instances.<name> settings by); the derived host:port/ak
+              # rides along as the secondary physical_id for dedup/diagnostics.
+              instance_id = name.to_s
+              physical_id = derive_physical_id(instance_cfg:)
               instance_key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-                provider_family: :anthropic, instance_id: instance_id
+                provider_family: :anthropic, instance_id: instance_id, physical_id: physical_id
               )
 
               callable = AnthropicCallable.new(instance_cfg: instance_cfg, logger: log)
@@ -141,14 +152,16 @@ module Legion
               publisher_token = publisher.claim_instance(
                 instance_id:          instance_id,
                 callable:             callable,
-                probe_request_handle: probe_coordinator
+                probe_request_handle: probe_coordinator,
+                physical_id:          physical_id
               )
 
               offerings = discover_offerings_for_instance(instance_cfg:, instance_key:)
 
               probe_token = publisher.readiness_probe_started(
                 instance_id:     instance_id,
-                publisher_token: publisher_token
+                publisher_token: publisher_token,
+                physical_id:     physical_id
               )
 
               readiness = check_readiness(instance_cfg:)
@@ -159,14 +172,16 @@ module Legion
                   publisher_token: publisher_token,
                   offerings:       offerings,
                   sequence:        0,
-                  probe_token:     probe_token
+                  probe_token:     probe_token,
+                  physical_id:     physical_id
                 )
                 write_instance_display(name: name, ready: true, reason: readiness.reason)
               else
                 publisher.readiness_failed(
                   instance_id: instance_id,
                   probe_token: probe_token,
-                  reason:      readiness.reason
+                  reason:      readiness.reason,
+                  physical_id: physical_id
                 )
                 write_instance_display(name: name, ready: false, reason: readiness.reason)
               end
@@ -175,6 +190,7 @@ module Legion
                 @instance_states[instance_id] = {
                   name:              name,
                   instance_key:      instance_key,
+                  physical_id:       physical_id,
                   instance_cfg:      instance_cfg,
                   callable:          callable,
                   probe_coordinator: probe_coordinator,
@@ -251,7 +267,8 @@ module Legion
               )
               probe_token = publisher.readiness_probe_started(
                 instance_id:     instance_id,
-                publisher_token: state[:publisher_token]
+                publisher_token: state[:publisher_token],
+                physical_id:     state[:physical_id]
               )
               readiness = check_readiness(instance_cfg: state[:instance_cfg])
 
@@ -261,7 +278,8 @@ module Legion
                   publisher_token: state[:publisher_token],
                   offerings:       offerings,
                   sequence:        0,
-                  probe_token:     probe_token
+                  probe_token:     probe_token,
+                  physical_id:     state[:physical_id]
                 )
                 with_instance_states do
                   state[:offerings] = offerings
@@ -272,7 +290,8 @@ module Legion
                 publisher.readiness_failed(
                   instance_id: instance_id,
                   probe_token: probe_token,
-                  reason:      readiness.reason
+                  reason:      readiness.reason,
+                  physical_id: state[:physical_id]
                 )
                 write_instance_display(name: state[:name], ready: false, reason: readiness.reason)
               end
@@ -297,7 +316,8 @@ module Legion
                 instance_id:     instance_id,
                 publisher_token: state[:publisher_token],
                 offerings:       new_offerings,
-                sequence:        sequence
+                sequence:        sequence,
+                physical_id:     state[:physical_id]
               )
               with_instance_states do
                 state[:offerings] = new_offerings
@@ -318,7 +338,8 @@ module Legion
 
               probe_token = publisher.readiness_probe_started(
                 instance_id:     instance_id,
-                publisher_token: state[:publisher_token]
+                publisher_token: state[:publisher_token],
+                physical_id:     state[:physical_id]
               )
 
               readiness = check_readiness(instance_cfg: state[:instance_cfg])
@@ -345,7 +366,8 @@ module Legion
 
               probe_token = publisher.readiness_probe_started(
                 instance_id:     instance_id,
-                publisher_token: state[:publisher_token]
+                publisher_token: state[:publisher_token],
+                physical_id:     state[:physical_id]
               )
 
               readiness = check_readiness(instance_cfg: state[:instance_cfg])
@@ -365,13 +387,18 @@ module Legion
 
             def report_probe_result(instance_id:, state:, probe_token:, readiness:)
               if readiness.ready?
-                publisher.readiness_succeeded(instance_id: instance_id, probe_token: probe_token)
+                publisher.readiness_succeeded(
+                  instance_id: instance_id,
+                  probe_token: probe_token,
+                  physical_id: state[:physical_id]
+                )
                 write_instance_display(name: state[:name], ready: true, reason: readiness.reason)
               else
                 publisher.readiness_failed(
                   instance_id: instance_id,
                   probe_token: probe_token,
-                  reason:      readiness.reason
+                  reason:      readiness.reason,
+                  physical_id: state[:physical_id]
                 )
                 write_instance_display(name: state[:name], ready: false, reason: readiness.reason)
               end
@@ -451,7 +478,7 @@ module Legion
                 provider_native_key:           model_id,
                 model:                         model_id,
                 tier:                          tier,
-                operation_evidence:            build_operation_evidence,
+                operation_evidence:            build_operation_evidence(model_id: model_id, model_data: model_data),
                 capability_evidence:           build_capability_evidence(model_id: model_id, model_data: model_data),
                 context_evidence:              absent_value_evidence,
                 max_output_evidence:           absent_value_evidence,
@@ -466,8 +493,14 @@ module Legion
 
             # ── Operation evidence ────────────────────────────────────────────
 
-            def build_operation_evidence
+            # Authoritative operation evidence (mirrors bedrock): an embedding
+            # model publishes chat: :unsupported so a plain chat request can
+            # never misroute to it; chat evidence is published only for
+            # non-embedding models.
+            def build_operation_evidence(model_id:, model_data:)
               now = Time.now.freeze
+              return embedding_operations(now: now) if embedding_model?(model_id: model_id, model_data: model_data)
+
               {
                 chat:         op_evidence(operation: :chat,         status: :supported,   observed_at: now),
                 stream_chat:  op_evidence(operation: :stream_chat,  status: :supported,   observed_at: now),
@@ -479,6 +512,26 @@ module Legion
                 moderate:     op_evidence(operation: :moderate,     status: :unsupported, observed_at: now),
                 count_tokens: op_evidence(operation: :count_tokens, status: :unknown,     observed_at: now)
               }
+            end
+
+            def embedding_operations(now:)
+              result = %i[chat stream_chat image transcribe translate speak moderate count_tokens].to_h do |operation|
+                [operation, op_evidence(operation: operation, status: :unsupported, observed_at: now)]
+              end
+              # The provider catalog is the authority that this model class
+              # serves embed (type/id came from /v1/models).
+              result[:embed] = Legion::Extensions::Llm::Inventory::OperationEvidence.new(
+                operation:   :embed,
+                status:      :supported,
+                source:      :provider_catalog,
+                observed_at: now
+              )
+              result
+            end
+
+            def embedding_model?(model_id:, model_data:)
+              (model_data.is_a?(Hash) && model_data[:type].to_s == 'embedding') ||
+                model_id.to_s.include?('embed')
             end
 
             def op_evidence(operation:, status:, observed_at:)
@@ -494,6 +547,16 @@ module Legion
             # ── Capability evidence ───────────────────────────────────────────
 
             def build_capability_evidence(model_id:, model_data:)
+              if embedding_model?(model_id: model_id, model_data: model_data)
+                # An embedding model serves embed and nothing else (mirrors
+                # bedrock's authoritative exclusion).
+                return {
+                  embedding: cap_evidence(
+                    capability: :embedding, status: :supported, source: :provider_catalog
+                  )
+                }
+              end
+
               {
                 completion: cap_evidence(
                   capability: :completion, status: :supported, source: :provider_implementation
@@ -549,9 +612,13 @@ module Legion
               )
             end
 
-            # ── Instance ID derivation ────────────────────────────────────────
+            # ── Physical ID derivation (secondary) ───────────────────────────
+            # The secondary physical id (host:port or host:port/ak:<8-char
+            # credential digest>) rides on InstanceKey#physical_id for dedup
+            # and diagnostics only. The instance identity itself is the
+            # operator's config name (see claim_and_activate_instance).
 
-            def derive_instance_id(instance_cfg:)
+            def derive_physical_id(instance_cfg:)
               base_url = instance_cfg[:anthropic_api_base] || 'https://api.anthropic.com'
               host_port = extract_host_port(url: base_url)
               api_key = instance_cfg[:anthropic_api_key] || instance_cfg.dig(:credentials, :api_key)
@@ -587,7 +654,8 @@ module Legion
               instance_id = state[:instance_key].instance_id
               publisher.remove_instance(
                 instance_id:     instance_id,
-                publisher_token: state[:publisher_token]
+                publisher_token: state[:publisher_token],
+                physical_id:     state[:physical_id]
               )
               with_instance_states { @instance_states.delete(instance_id) }
               clear_instance_display(name: state[:name])
@@ -600,16 +668,18 @@ module Legion
             # ── Configuration ─────────────────────────────────────────────────
 
             # Only instances the operator (or the merged provider defaults)
-            # actually configured are claimable. Instances with enabled: false
-            # or without a resolvable credential are skipped with a log —
-            # claiming a credential-less instance would probe unauthenticated
-            # and never activate.
+            # actually configured are claimable. Instances with a reserved
+            # name, enabled: false, or without a resolvable credential are
+            # skipped with a log — claiming a credential-less or
+            # reserved-name instance would never activate.
             def configured_instances
               instances = {}
               cfg_instances = settings[:instances]
               return instances unless cfg_instances.is_a?(Hash)
 
               cfg_instances.each do |name, config|
+                next unless claimable_instance_name?(name)
+
                 normalized = claimable_instance_config(config:)
                 instances[name.to_sym] = normalized unless normalized.nil?
               rescue StandardError => e
@@ -618,6 +688,16 @@ module Legion
               end
 
               instances
+            end
+
+            # A reserved config name is unclaimable by construction; skipping
+            # it here (instead of raising in the claim) keeps the per-tick
+            # reconcile from re-attempting a guaranteed ValidationError.
+            def claimable_instance_name?(name)
+              return true unless RESERVED_INSTANCE_NAMES.include?(name.to_s)
+
+              log.warn("[anthropic][actor] action=skip_instance instance=#{name} reason=reserved_instance_name")
+              false
             end
 
             def claimable_instance_config(config:)

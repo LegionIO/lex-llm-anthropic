@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.3.3] - 2026-08-17
+
+### Changed
+- **SSOT v3 fail-forward instance identity** — `DiscoveryRefresh` now publishes the operator's
+  config NAME as the `InstanceKey` `instance_id` (the key the router resolves `instances.<name>`
+  settings by); the derived `host:port` / `host:port/ak:<8-char credential digest>` rides along as
+  the secondary `physical_id` for dedup and diagnostics only (excluded from InstanceKey
+  equality/hash). Two config names on the same endpoint + credential stay distinct instances
+  (no collapse). Reserved config names (`default` — the synthetic settings bucket) are skipped at
+  the claim boundary with a log instead of raising `ValidationError` every tick.
+- **Embedding models publish authoritative operation evidence** — Models served as the embedding
+  class (catalog `type: 'embedding'` or `embed` in the model id) publish `chat: :unsupported`
+  (all chat operations unsupported) and `embed: :supported` with `:provider_catalog` source, so a
+  plain chat request can never misroute to them; their capability evidence is
+  `embedding: :supported` and nothing else (no completion/tools/etc.). Non-embedding models are
+  unchanged.
+- **lex-llm floor raised to 0.7.1** — Requires the SSOT v3 inventory foundation with config-name
+  `instance_id` + secondary `physical_id` support on `InstanceKey` and the publisher API.
+
 ## [0.3.2] - 2026-08-13
 
 ### Fixed

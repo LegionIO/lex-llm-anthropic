@@ -37,12 +37,16 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
                             })
   end
 
-  def instance_key_for(api_key:, endpoint: 'https://api.anthropic.com')
+  # The actor publishes the operator's config NAME as the instance identity;
+  # the derived host:port/ak:<digest> rides along as the secondary physical_id.
+  def instance_key_for(name:, api_key:, endpoint: 'https://api.anthropic.com')
     host = URI.parse(endpoint).host
     port = URI.parse(endpoint).port
     fingerprint = Digest::SHA256.hexdigest(api_key)[0, 8]
     Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-      provider_family: :anthropic, instance_id: "#{host}:#{port}/ak:#{fingerprint}"
+      provider_family: :anthropic,
+      instance_id:     name.to_s,
+      physical_id:     "#{host}:#{port}/ak:#{fingerprint}"
     )
   end
 
@@ -92,18 +96,25 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
 
   describe 'initial discovery' do
     it 'claims and activates a configured instance, and writes the settings display' do
-      seed_instance(:default, api_key: 'sk-ant-lifecycle-one')
+      seed_instance(:primary, api_key: 'sk-ant-lifecycle-one')
       actor = described_class.new
       actor.manual
 
-      key = instance_key_for(api_key: 'sk-ant-lifecycle-one')
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-lifecycle-one')
       snapshot = registry.snapshot
 
       expect(snapshot.publication_status(instance_key: key).state).to eq(:complete)
       expect(snapshot.instance(instance_key: key).availability.state).to eq(:available)
       expect(snapshot.offerings_for(instance_key: key).map(&:model)).to contain_exactly('claude-sonnet-4-6', 'claude-haiku-4-5')
 
-      health = health_for(:default)
+      # Identity is the config name; the derived host:port/ak rides as the
+      # secondary physical_id on the committed key.
+      committed = snapshot.publication_status(instance_key: key)
+      expect(committed.instance_key.instance_id).to eq('primary')
+      expect(committed.instance_key.physical_id)
+        .to eq("api.anthropic.com:443/ak:#{Digest::SHA256.hexdigest('sk-ant-lifecycle-one')[0, 8]}")
+
+      health = health_for(:primary)
       expect(health[:circuit_state]).to eq(:closed)
       expect(health[:denied]).to eq(false)
       expect(health[:available]).to eq(true)
@@ -111,22 +122,22 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
       expect(health[:last_probe_outcome]).to eq(:success)
       expect(health[:source]).to eq(:ssot_v3)
       expect(health[:observed_at]).to be_a(String)
-      expect(settings_root.dig(:llm, :anthropic, :instances, :default, :capabilities))
+      expect(settings_root.dig(:llm, :anthropic, :instances, :primary, :capabilities))
         .to eq(%i[completion streaming vision tools])
     end
 
     it 'stays initializing after an initial readiness failure and records unhealthy display' do
-      seed_instance(:default, api_key: 'sk-ant-lifecycle-two')
+      seed_instance(:primary, api_key: 'sk-ant-lifecycle-two')
       stub_probe_http(ready: false)
 
       actor = described_class.new
       actor.manual
 
-      key = instance_key_for(api_key: 'sk-ant-lifecycle-two')
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-lifecycle-two')
       expect(registry.snapshot.publication_status(instance_key: key).state).to eq(:initializing)
       expect(registry.snapshot.instance(instance_key: key)).to be_nil
 
-      health = health_for(:default)
+      health = health_for(:primary)
       expect(health[:circuit_state]).to eq(:open)
       expect(health[:available]).to eq(false)
       expect(health[:adjustment]).to eq(-50)
@@ -168,11 +179,13 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
         statuses = registry.snapshot.each_publication_status.to_a
         expect(statuses.size).to eq(1)
 
-        proxy_key = instance_key_for(api_key: 'sk-ant-proxy-real', endpoint: 'https://proxy.internal:8443')
+        proxy_key = instance_key_for(name: :proxy, api_key: 'sk-ant-proxy-real', endpoint: 'https://proxy.internal:8443')
         expect(statuses.first.instance_key).to eq(proxy_key)
         expect(statuses.first.state).to eq(:complete)
 
-        # Skipped instances are never claimed and get no health display.
+        # Skipped instances are never claimed and get no health display. The
+        # credential-less :default is both a reserved name and credential-less
+        # — it is skipped either way.
         expect(health_for(:default)).to be_nil
         expect(health_for(:disabled)).to be_nil
       ensure
@@ -185,20 +198,20 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
 
   describe 'recovery after initial readiness failure' do
     it 're-activates an :initializing instance on a later passing probe' do
-      seed_instance(:default, api_key: 'sk-ant-lifecycle-recover')
+      seed_instance(:primary, api_key: 'sk-ant-lifecycle-recover')
       stub_probe_http(ready: false)
 
       actor = described_class.new
       actor.manual # initial probe fails → :initializing
-      key = instance_key_for(api_key: 'sk-ant-lifecycle-recover')
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-lifecycle-recover')
       expect(registry.snapshot.publication_status(instance_key: key).state).to eq(:initializing)
 
       stub_probe_http(ready: true)
       actor.manual # tick → retry_initial_activation → activate
       expect(registry.snapshot.publication_status(instance_key: key).state).to eq(:complete)
       expect(registry.snapshot.instance(instance_key: key).availability.state).to eq(:available)
-      expect(health_for(:default)[:available]).to eq(true)
-      expect(health_for(:default)[:last_probe_outcome]).to eq(:success)
+      expect(health_for(:primary)[:available]).to eq(true)
+      expect(health_for(:primary)[:last_probe_outcome]).to eq(:success)
     end
   end
 
@@ -210,13 +223,13 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
       actor = described_class.new
       actor.manual
 
-      alpha_key = instance_key_for(api_key: 'sk-ant-alpha', endpoint: 'https://alpha.internal:8443')
+      alpha_key = instance_key_for(name: :alpha, api_key: 'sk-ant-alpha', endpoint: 'https://alpha.internal:8443')
       expect(registry.snapshot.publication_status(instance_key: alpha_key).state).to eq(:complete)
 
       seed_instance(:beta, api_key: 'sk-ant-beta', endpoint: 'https://beta.internal:8443')
       actor.manual # tick → reconcile: alpha gone, beta new
 
-      beta_key = instance_key_for(api_key: 'sk-ant-beta', endpoint: 'https://beta.internal:8443')
+      beta_key = instance_key_for(name: :beta, api_key: 'sk-ant-beta', endpoint: 'https://beta.internal:8443')
       expect(registry.snapshot.publication_status(instance_key: beta_key).state).to eq(:complete)
       expect(registry.snapshot.instance(instance_key: alpha_key)).to be_nil
       expect(registry.snapshot.publication_status(instance_key: alpha_key)).to be_nil
@@ -228,18 +241,18 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
 
   describe 'cadence probe' do
     it 'marks an available instance unavailable after a failing cadence probe' do
-      seed_instance(:default, api_key: 'sk-ant-lifecycle-cadence')
+      seed_instance(:primary, api_key: 'sk-ant-lifecycle-cadence')
       actor = described_class.new
       actor.manual # initial probe ready → available
-      key = instance_key_for(api_key: 'sk-ant-lifecycle-cadence')
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-lifecycle-cadence')
       expect(registry.snapshot.instance(instance_key: key).availability.state).to eq(:available)
 
       stub_probe_http(ready: false)
       actor.manual # tick → cadence probe fails → unavailable
 
       expect(registry.snapshot.instance(instance_key: key).availability.state).to eq(:unavailable)
-      expect(health_for(:default)[:available]).to eq(false)
-      expect(health_for(:default)[:last_probe_outcome]).to eq(:failure)
+      expect(health_for(:primary)[:available]).to eq(false)
+      expect(health_for(:primary)[:last_probe_outcome]).to eq(:failure)
     end
   end
 
@@ -247,14 +260,121 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
 
   describe '#shutdown' do
     it 'removes all instances from the registry and clears the display' do
-      seed_instance(:default, api_key: 'sk-ant-lifecycle-shutdown')
+      seed_instance(:primary, api_key: 'sk-ant-lifecycle-shutdown')
       actor = described_class.new
       actor.manual
 
       actor.shutdown
 
       expect(registry.snapshot.each_publication_status.to_a).to be_empty
+      expect(health_for(:primary)).to be_nil
+    end
+  end
+
+  # ── reserved instance name ────────────────────────────────────────────────
+
+  describe 'reserved instance name' do
+    it 'skips an instance named "default" even with a credential (foundation reserves the id)' do
+      seed_anthropic_settings({
+                                instances: {
+                                  default: {
+                                    enabled:  true,
+                                    endpoint: 'https://api.anthropic.com',
+                                    api_key:  'sk-ant-reserved'
+                                  },
+                                  primary: {
+                                    enabled:  true,
+                                    endpoint: 'https://primary.internal:8443',
+                                    api_key:  'sk-ant-primary'
+                                  }
+                                }
+                              })
+
+      actor = described_class.new
+      actor.manual
+
+      statuses = registry.snapshot.each_publication_status.to_a
+      expect(statuses.size).to eq(1)
+      primary_key = instance_key_for(
+        name: :primary, api_key: 'sk-ant-primary', endpoint: 'https://primary.internal:8443'
+      )
+      expect(statuses.first.instance_key).to eq(primary_key)
+      expect(statuses.first.state).to eq(:complete)
+
+      # The reserved-name instance is never claimed and gets no health display.
       expect(health_for(:default)).to be_nil
+      expect(health_for(:primary)[:available]).to eq(true)
+    end
+  end
+
+  # ── authoritative operation evidence: embedding models ───────────────────
+
+  describe 'embedding model operation evidence' do
+    it 'publishes chat: :unsupported and embed: :supported for an embedding model' do
+      allow(Faraday).to receive(:new) do |*_args, &_block|
+        connection = instance_double(Faraday::Connection)
+        allow(connection).to receive(:get) do |path|
+          if path == '/v1/models'
+            probe_response(
+              200,
+              ::JSON.dump(data: [
+                            { id: 'claude-sonnet-4-6' },
+                            { id: 'anthropic-embed-v1', type: 'embedding' }
+                          ])
+            )
+          else
+            probe_response(503, ::JSON.dump(type: 'error', error: { type: 'api_error', message: 'unavailable' }))
+          end
+        end
+        connection
+      end
+
+      seed_instance(:embedder, api_key: 'sk-ant-embedder')
+      actor = described_class.new
+      actor.manual
+
+      key = instance_key_for(name: :embedder, api_key: 'sk-ant-embedder')
+      offerings = registry.snapshot.offerings_for(instance_key: key)
+      expect(offerings.map(&:model)).to contain_exactly('claude-sonnet-4-6', 'anthropic-embed-v1')
+
+      chat_model = offerings.find { |o| o.model == 'claude-sonnet-4-6' }
+      expect(chat_model.operation_evidence[:chat].status).to eq(:supported)
+      expect(chat_model.operation_evidence[:embed].status).to eq(:unsupported)
+
+      embedding_model = offerings.find { |o| o.model == 'anthropic-embed-v1' }
+      expect(embedding_model.operation_evidence[:chat].status).to eq(:unsupported)
+      expect(embedding_model.operation_evidence[:stream_chat].status).to eq(:unsupported)
+      expect(embedding_model.operation_evidence[:embed].status).to eq(:supported)
+      expect(embedding_model.operation_evidence[:embed].source).to eq(:provider_catalog)
+      expect(embedding_model.operation_evidence[:count_tokens].status).to eq(:unsupported)
+      expect(embedding_model.capability_evidence[:embedding].status).to eq(:supported)
+      # An embedding model serves embed and nothing else — no chat capabilities.
+      expect(embedding_model.capability_evidence).not_to have_key(:completion)
+      expect(embedding_model.capability_evidence).not_to have_key(:tools)
+    end
+
+    it 'publishes chat: :unsupported for an embedding-named model (id evidence)' do
+      allow(Faraday).to receive(:new) do |*_args, &_block|
+        connection = instance_double(Faraday::Connection)
+        allow(connection).to receive(:get) do |path|
+          if path == '/v1/models'
+            probe_response(200, ::JSON.dump(data: [{ id: 'custom-embedder-latest' }]))
+          else
+            probe_response(503, ::JSON.dump(type: 'error', error: { type: 'api_error', message: 'unavailable' }))
+          end
+        end
+        connection
+      end
+
+      seed_instance(:embedder, api_key: 'sk-ant-embedder-id')
+      actor = described_class.new
+      actor.manual
+
+      key = instance_key_for(name: :embedder, api_key: 'sk-ant-embedder-id')
+      offering = registry.snapshot.offerings_for(instance_key: key).first
+      expect(offering.model).to eq('custom-embedder-latest')
+      expect(offering.operation_evidence[:chat].status).to eq(:unsupported)
+      expect(offering.operation_evidence[:embed].status).to eq(:supported)
     end
   end
 end

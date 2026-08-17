@@ -90,13 +90,16 @@ class AnthropicExplicitUnavailableError < StandardError; end
 class AnthropicSsotHarness
   include AnthropicSsotEvidenceHelpers
 
+  # Each fixture carries the operator's CONFIG NAME — the instance identity.
   INSTANCE_CONFIGS = [
     {
+      name:               'primary',
       anthropic_api_base: 'https://api.anthropic.com',
       anthropic_api_key:  'sk-ant-key-one-1234567890',
       tier:               :frontier
     }.freeze,
     {
+      name:               'proxy',
       anthropic_api_base: 'https://anthropic-proxy.internal:443',
       anthropic_api_key:  'sk-ant-key-two-0987654321',
       tier:               :frontier
@@ -120,7 +123,16 @@ class AnthropicSsotHarness
   def provider_family = :anthropic
   def instance_configs = INSTANCE_CONFIGS
 
+  # The operator's config name IS the instance identity — the key the router
+  # resolves instances.<name> settings (per-instance tuning, enable_*) by.
   def instance_id(instance_config:)
+    instance_config[:name].to_s
+  end
+
+  # The derived host:port or host:port/ak:<8-char digest> is the SECONDARY
+  # physical id: dedup and diagnostics only, never identity (it is excluded
+  # from InstanceKey equality/hash).
+  def physical_id(instance_config:)
     base_url = instance_config[:anthropic_api_base] || 'https://api.anthropic.com'
     host_port = extract_host_port(base_url: base_url)
     api_key = instance_config[:anthropic_api_key] || instance_config.dig(:credentials, :api_key)
@@ -237,6 +249,16 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   let(:ssot_harness) { AnthropicSsotHarness.new }
   let(:registry) { Legion::Extensions::Llm::Inventory::Registry }
 
+  # The exact InstanceKey the production actor builds for a fixture config:
+  # identity = config name, secondary physical_id = derived host:port/ak.
+  def anthropic_key_for(config)
+    Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
+      provider_family: ssot_harness.provider_family,
+      instance_id:     ssot_harness.instance_id(instance_config: config),
+      physical_id:     ssot_harness.physical_id(instance_config: config)
+    )
+  end
+
   before do
     registry.reset!
     allow_any_instance_of(Legion::Extensions::Llm::Connection).to receive(:post) do |connection, *_args, &_block|
@@ -251,21 +273,29 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
   it_behaves_like 'an SSOT v3 provider adapter'
 
-  # ─── Anthropic-specific identity derivation ──────────────────────────────────
+  # ─── Anthropic-specific identity: config name + secondary physical id ─────
 
   describe 'instance identity derivation' do
-    it 'derives instance_id as host:port/ak:fingerprint with API key (8-char fingerprint)' do
-      config = { anthropic_api_base: 'https://api.anthropic.com', anthropic_api_key: 'sk-ant-key-one-1234567890' }
+    it 'uses the operator config name as the instance_id' do
+      config = ssot_harness.instance_configs.first
+      expect(ssot_harness.instance_id(instance_config: config)).to eq('primary')
+    end
+
+    it 'derives physical_id as host:port/ak:fingerprint with API key (8-char fingerprint)' do
+      config = {
+        name: 'primary', anthropic_api_base: 'https://api.anthropic.com',
+        anthropic_api_key: 'sk-ant-key-one-1234567890'
+      }
       fingerprint = Digest::SHA256.hexdigest('sk-ant-key-one-1234567890')[0, 8]
-      expect(ssot_harness.instance_id(instance_config: config)).to eq("api.anthropic.com:443/ak:#{fingerprint}")
+      expect(ssot_harness.physical_id(instance_config: config)).to eq("api.anthropic.com:443/ak:#{fingerprint}")
     end
 
-    it 'derives instance_id as host:port without API key' do
-      config = { anthropic_api_base: 'https://api.anthropic.com' }
-      expect(ssot_harness.instance_id(instance_config: config)).to eq('api.anthropic.com:443')
+    it 'derives physical_id as host:port without API key' do
+      config = { name: 'primary', anthropic_api_base: 'https://api.anthropic.com' }
+      expect(ssot_harness.physical_id(instance_config: config)).to eq('api.anthropic.com:443')
     end
 
-    it 'produces distinct instance IDs for two different configs' do
+    it 'produces distinct identities for two different config names' do
       ids = ssot_harness.instance_configs.map { |cfg| ssot_harness.instance_id(instance_config: cfg) }
       expect(ids.uniq.size).to eq(2)
     end
@@ -277,11 +307,36 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
       expect(id_a).to eq(id_b)
     end
 
-    it 'uses 8 character fingerprint (not 6)' do
+    it 'uses 8 character fingerprint (not 6) in the physical_id' do
       config = ssot_harness.instance_configs.first
-      id = ssot_harness.instance_id(instance_config: config)
-      fingerprint_part = id.split('/ak:').last
+      fingerprint_part = ssot_harness.physical_id(instance_config: config).split('/ak:').last
       expect(fingerprint_part.length).to eq(8)
+    end
+
+    it 'keeps distinct config names on the same endpoint as distinct instances (no collapse)' do
+      same_endpoint = {
+        name: 'a', anthropic_api_base: 'https://api.anthropic.com',
+        anthropic_api_key: 'sk-ant-key-one-1234567890'
+      }
+      other_name = same_endpoint.merge(name: 'b')
+      expect(ssot_harness.instance_id(instance_config: same_endpoint)).not_to eq(
+        ssot_harness.instance_id(instance_config: other_name)
+      )
+      # Same endpoint + credential → identical secondary physical id, yet the
+      # names keep the instances apart.
+      expect(ssot_harness.physical_id(instance_config: same_endpoint)).to eq(
+        ssot_harness.physical_id(instance_config: other_name)
+      )
+    end
+
+    it 'excludes the secondary physical_id from InstanceKey equality and hash' do
+      config = ssot_harness.instance_configs.first
+      with_physical = anthropic_key_for(config)
+      without_physical = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
+        provider_family: :anthropic, instance_id: ssot_harness.instance_id(instance_config: config)
+      )
+      expect(with_physical).to eq(without_physical)
+      expect(with_physical.hash).to eq(without_physical.hash)
     end
   end
 
@@ -290,20 +345,22 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   describe 'two Anthropic instances serving the same model' do
     def bring_up_instance(config, tier: :frontier)
       publisher = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :anthropic)
-      instance_id = ssot_harness.instance_id(instance_config: config)
-      key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :anthropic, instance_id: instance_id
-      )
+      key = anthropic_key_for(config)
+      instance_id = key.instance_id
+      physical_id = key.physical_id
       callable = ssot_harness.build_callable(instance_config: config)
       coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
         instance_key: key, enqueue: ->(**) { true }
       )
 
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      token = publisher.claim_instance(
+        instance_id: instance_id, callable: callable, probe_request_handle: coordinator, physical_id: physical_id
+      )
+      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token, physical_id: physical_id)
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: tier)
       publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe,
+        physical_id: physical_id
       )
 
       { publisher: publisher, key: key, callable: callable, token: token, drafts: drafts, coordinator: coordinator }
@@ -346,20 +403,22 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   describe 'tier change and identity preservation' do
     def bring_up_with_tier(config, tier:)
       publisher = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :anthropic)
-      instance_id = ssot_harness.instance_id(instance_config: config)
-      key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :anthropic, instance_id: instance_id
-      )
+      key = anthropic_key_for(config)
+      instance_id = key.instance_id
+      physical_id = key.physical_id
       callable = ssot_harness.build_callable(instance_config: config)
       coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
         instance_key: key, enqueue: ->(**) { true }
       )
 
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      token = publisher.claim_instance(
+        instance_id: instance_id, callable: callable, probe_request_handle: coordinator, physical_id: physical_id
+      )
+      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token, physical_id: physical_id)
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: tier)
       publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe,
+        physical_id: physical_id
       )
 
       { publisher: publisher, key: key, callable: callable, token: token, drafts: drafts }
@@ -376,10 +435,11 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
         instance_config: config, callable: context[:callable], tier: :local
       )
       context[:publisher].replace_instance_snapshot(
-        instance_id:     ssot_harness.instance_id(instance_config: config),
+        instance_id:     context[:key].instance_id,
         publisher_token: context[:token],
         offerings:       local_drafts,
-        sequence:        1
+        sequence:        1,
+        physical_id:     context[:key].physical_id
       )
 
       after_offering = registry.snapshot.offerings_for(instance_key: context[:key]).first
@@ -438,12 +498,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
   describe 'startup gating' do
     let(:config) { ssot_harness.instance_configs[0] }
-    let(:instance_id) { ssot_harness.instance_id(instance_config: config) }
-    let(:key) do
-      Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :anthropic, instance_id: instance_id
-      )
-    end
+    let(:key) { anthropic_key_for(config) }
+    let(:instance_id) { key.instance_id }
+    let(:physical_id) { key.physical_id }
     let(:publisher) { Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :anthropic) }
     let(:callable) { ssot_harness.build_callable(instance_config: config) }
     let(:coordinator) do
@@ -453,7 +510,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     end
 
     it 'remains initializing until readiness probe succeeds' do
-      publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
+      publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator, physical_id: physical_id)
 
       snapshot = registry.snapshot
       expect(snapshot.instance(instance_key: key)).to be_nil
@@ -461,9 +518,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     end
 
     it 'stays initializing after an initial readiness failure' do
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
-      publisher.readiness_failed(instance_id: instance_id, probe_token: probe, reason: 'Anthropic /v1/models connection failed')
+      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator, physical_id: physical_id)
+      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token, physical_id: physical_id)
+      publisher.readiness_failed(instance_id: instance_id, probe_token: probe, reason: 'Anthropic /v1/models connection failed', physical_id: physical_id)
 
       snapshot = registry.snapshot
       expect(snapshot.instance(instance_key: key)).to be_nil
@@ -471,11 +528,12 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     end
 
     it 'transitions to available after readiness success' do
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator, physical_id: physical_id)
+      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token, physical_id: physical_id)
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: :frontier)
       publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe,
+        physical_id: physical_id
       )
 
       snapshot = registry.snapshot
@@ -488,12 +546,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
   describe 'readiness probe lifecycle' do
     let(:config) { ssot_harness.instance_configs[0] }
-    let(:instance_id) { ssot_harness.instance_id(instance_config: config) }
-    let(:key) do
-      Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :anthropic, instance_id: instance_id
-      )
-    end
+    let(:key) { anthropic_key_for(config) }
+    let(:instance_id) { key.instance_id }
+    let(:physical_id) { key.physical_id }
     let(:publisher) { Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :anthropic) }
     let(:callable) { ssot_harness.build_callable(instance_config: config) }
     let(:coordinator) do
@@ -503,11 +558,12 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     end
 
     def activate_instance
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator, physical_id: physical_id)
+      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token, physical_id: physical_id)
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: :frontier)
       publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe,
+        physical_id: physical_id
       )
       token
     end
@@ -515,12 +571,12 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     it 'rejects a stale probe started before a newer one that reported failure' do
       token = activate_instance
 
-      stale_probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
-      fresh_probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      stale_probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token, physical_id: physical_id)
+      fresh_probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token, physical_id: physical_id)
 
-      publisher.readiness_failed(instance_id: instance_id, probe_token: fresh_probe, reason: 'server down')
+      publisher.readiness_failed(instance_id: instance_id, probe_token: fresh_probe, reason: 'server down', physical_id: physical_id)
 
-      result = publisher.readiness_succeeded(instance_id: instance_id, probe_token: stale_probe)
+      result = publisher.readiness_succeeded(instance_id: instance_id, probe_token: stale_probe, physical_id: physical_id)
       expect(result.applied).to be(false)
       expect(result.reason).to eq(:stale_probe)
     end
@@ -533,8 +589,8 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
       )
       expect(registry.snapshot.instance(instance_key: key).availability.state).to eq(:unavailable)
 
-      new_probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
-      publisher.readiness_succeeded(instance_id: instance_id, probe_token: new_probe)
+      new_probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token, physical_id: physical_id)
+      publisher.readiness_succeeded(instance_id: instance_id, probe_token: new_probe, physical_id: physical_id)
       expect(registry.snapshot.instance(instance_key: key).availability.state).to eq(:available)
     end
   end
@@ -544,20 +600,22 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   describe 'instance-unavailable isolation' do
     def bring_up(config)
       publisher = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :anthropic)
-      instance_id = ssot_harness.instance_id(instance_config: config)
-      key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :anthropic, instance_id: instance_id
-      )
+      key = anthropic_key_for(config)
+      instance_id = key.instance_id
+      physical_id = key.physical_id
       callable = ssot_harness.build_callable(instance_config: config)
       coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
         instance_key: key, enqueue: ->(**) { true }
       )
 
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      token = publisher.claim_instance(
+        instance_id: instance_id, callable: callable, probe_request_handle: coordinator, physical_id: physical_id
+      )
+      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token, physical_id: physical_id)
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: :frontier)
       publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe,
+        physical_id: physical_id
       )
 
       { publisher: publisher, key: key, callable: callable, token: token }
@@ -681,12 +739,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
   describe 'ProbeCoordinator coalescing' do
     let(:config) { ssot_harness.instance_configs[0] }
-    let(:instance_id) { ssot_harness.instance_id(instance_config: config) }
-    let(:key) do
-      Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :anthropic, instance_id: instance_id
-      )
-    end
+    let(:key) { anthropic_key_for(config) }
     let(:enqueue_calls) { [] }
     let(:coordinator) do
       Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
@@ -759,12 +812,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
   describe 'exact fleet worker execution contract' do
     let(:config) { ssot_harness.instance_configs[0] }
-    let(:instance_id) { ssot_harness.instance_id(instance_config: config) }
-    let(:key) do
-      Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-        provider_family: :anthropic, instance_id: instance_id
-      )
-    end
+    let(:key) { anthropic_key_for(config) }
+    let(:instance_id) { key.instance_id }
+    let(:physical_id) { key.physical_id }
 
     def activate_offering
       publisher = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :anthropic)
@@ -778,11 +828,12 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
       coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
         instance_key: key, enqueue: ->(**) { true }
       )
-      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator)
-      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token)
+      token = publisher.claim_instance(instance_id: instance_id, callable: callable, probe_request_handle: coordinator, physical_id: physical_id)
+      probe = publisher.readiness_probe_started(instance_id: instance_id, publisher_token: token, physical_id: physical_id)
       drafts = ssot_harness.build_offering_drafts(instance_config: config, callable: callable, tier: :frontier)
       publisher.activate_instance_snapshot(
-        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe
+        instance_id: instance_id, publisher_token: token, offerings: drafts, sequence: 0, probe_token: probe,
+        physical_id: physical_id
       )
       token
     end
