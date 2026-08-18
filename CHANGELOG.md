@@ -1,5 +1,104 @@
 # Changelog
 
+## [0.3.4] - 2026-08-18
+
+### Fixed
+- **Synthetic default is claimable** — Removed the discovery skip branch and once-per-boot warning for the synthetic `instances.default` configuration; normal credential validation now decides whether it can be activated.
+
+## [0.3.3] - 2026-08-17
+
+### Changed
+- **SSOT v3 fail-forward instance identity** — `DiscoveryRefresh` now publishes the operator's
+  config NAME as the `InstanceKey` `instance_id` (the key the router resolves `instances.<name>`
+  settings by); the derived `host:port` / `host:port/ak:<8-char credential digest>` rides along as
+  the secondary `physical_id` for dedup and diagnostics only (excluded from InstanceKey
+  equality/hash). Two config names on the same endpoint + credential stay distinct instances
+  (no collapse). Reserved config names (`default` — the synthetic settings bucket) are skipped at
+  the claim boundary with a log instead of raising `ValidationError` every tick.
+- **Embedding models publish authoritative operation evidence** — Models served as the embedding
+  class (catalog `type: 'embedding'` or `embed` in the model id) publish `chat: :unsupported`
+  (all chat operations unsupported) and `embed: :supported` with `:provider_catalog` source, so a
+  plain chat request can never misroute to them; their capability evidence is
+  `embedding: :supported` and nothing else (no completion/tools/etc.). Non-embedding models are
+  unchanged.
+- **lex-llm floor raised to 0.7.1** — Requires the SSOT v3 inventory foundation with config-name
+  `instance_id` + secondary `physical_id` support on `InstanceKey` and the publisher API.
+
+### Fixed
+- **Single actor registration** — The provider module no longer extends Core at file level, so the
+  boot-time submodule walk skips it and the gem's own top-level extension load is the sole actor
+  registration (eliminates the double-claim / `FencedPublisherError`).
+- **Synthetic-default skip warn now fires once per boot** — The `synthetic_default` skip warning
+  (unmodified `instances.default` template) is throttled to once per actor lifetime instead of
+  every discovery tick (was permanent WARN noise — an unconfigured provider is the normal state).
+
+## [0.3.2] - 2026-08-13
+
+### Fixed
+- **§1 settings guards removed (R2 pass)** — Eliminated remaining `||` fallbacks on registered
+  settings in `Provider#render_payload` (`|| 4096` on `settings[:default_max_tokens]`) and
+  `Translator#settings_default_max_tokens` / `#default_thinking_budget` / `#prompt_caching_settings`.
+  Registered `default_thinking_budget: 1024` as a canonical default in `Anthropic.default_settings`.
+  Replaced `Legion::Settings.dig(...)` + `|| {}` in `Translator#prompt_caching_settings` with direct
+  access via the registered default — `Translator#initialize` now seeds `@config` from the
+  registered instance defaults so all settings keys are always present without a Settings fallback.
+- **§2 dead second publication engine removed** — Deleted `attr_writer :registry_publisher` and the
+  `registry_publisher` class method from `Provider`. The artifact was non-functional (no callers)
+  but violated the single-publication-path invariant by keeping the old `RegistryPublisher`
+  reachable from the class interface.
+
+## [0.3.1] - 2026-08-13
+
+### Fixed
+- **§8 health firewall** — Removed the connection_failure → :instance_unavailable promotion from
+  `AnthropicSsotHarness#apply_anthropic_escalation`. Connection failures, timeouts, 529
+  `overloaded_error`, and generic 5xx are all request-local and must never mutate global instance
+  availability. Added `AnthropicExplicitUnavailableError` as the explicit service-unavailable signal
+  for conformance harness testing; rewrote the firewall assertion to prove `Faraday::ConnectionFailed`
+  stays `:connection_failure`, never `:instance_unavailable`.
+- **§9 default model injection removed** — `Translator#render_request` no longer injects
+  `'claude-sonnet-4'` when the canonical request carries no model. An omitted model is an empty
+  constraint, never a default; the Anthropic API will reject the request if required fields are absent.
+- **§2/§5 second publication engine removed** — `Provider#discover_offerings` no longer calls
+  `registry_publisher.publish_models_async`. The SSOT v3 `DiscoveryRefresh` actor is now the only
+  publication path. Removed the now-unused `discovery_registry_readiness` private method.
+- **§1 swallowed rescue removed** — Replaced `coordinator&.finish_probe rescue nil` with
+  explicit `begin/rescue` that calls `handle_exception` so finish_probe errors are logged and never
+  silently swallowed. Removed `# rubocop:disable Style/RescueModifier` inline annotations.
+- **§1 settings guards removed** — Eliminated `||` fallbacks and `.dig` guards on registered
+  settings in `DiscoveryRefresh`. Added `discovery_interval: 3600` as a registered default in
+  `Anthropic.default_settings`; all settings are now read through the standards-defined access path.
+
+## [0.3.0] - 2026-08-13
+
+### Changed
+- **SSOT v3 provider migration** — Replaced the ScopedRefresher-based `DiscoveryRefresh` actor with a
+  full SSOT v3 actor backed by `Legion::Extensions::Llm::Inventory::Publisher`. The actor claims instances,
+  discovers models via safe `GET /v1/models` (no inference), runs readiness probing, and publishes complete
+  `OfferingDraft` snapshots atomically. Supports tick-based refresh and coalesced reactive probes via
+  `ProbeCoordinator` after dispatch-triggered `instance_unavailable` transitions.
+- **`AnthropicCallable`** — New callable wrapper implementing `disconnect` and
+  `normalize_dispatch_error(error:)`. Anthropic 529 `overloaded_error` is always `:overloaded`, never
+  `:instance_unavailable`. Only transport-layer `ConnectionFailed` maps to `:connection_failure` (which
+  the actor harness may escalate). 429 → `:rate_limited`, timeouts → `:timeout`.
+- **Instance identity** — Derived from normalized endpoint host:port + SHA256 8-char credential fingerprint
+  (`host:port/ak:XXXXXXXX`). Stable across restarts; deterministic from inputs.
+- **Operations** — chat/stream_chat: supported; embed/image/transcribe/translate/speak/moderate: unsupported;
+  count_tokens: unknown. Source evidence: `:provider_implementation` for supported/unsupported,
+  `:default_false` for unknown.
+- **Capabilities** — completion/streaming/tools/vision: supported (`:provider_implementation`); thinking:
+  unknown (`:default_false` unless model metadata indicates reasoning); embedding: unsupported.
+- **Removed** `DEFAULT_MODEL` constant, `resolve_default_model` method, and `default_model` injection
+  from `discover_instances`. No default model or provider in SSOT v3.
+- **Removed** `RegistryEventBuilder` — replaced by the common `Inventory::Publisher`.
+- **Fleet worker** — Added `registry: Legion::Extensions::Llm::Inventory::Registry` kwarg to
+  `ProviderResponder.call`.
+- **Gemspec** — Raised `lex-llm` floor to `>= 0.7.0`.
+- **Conformance spec** — Added `spec/legion/extensions/llm/anthropic_ssot_v3_conformance_spec.rb` with
+  `AnthropicSsotHarness` and `it_behaves_like 'an SSOT v3 provider adapter'` plus provider-specific
+  assertions (identity, 529-always-overloaded, two-instance lane isolation, ProbeCoordinator coalescing,
+  no DEFAULT_MODEL, no Legion::LLM reverse dependency).
+
 ## [0.2.28] - 2026-08-04
 
 ### Changed

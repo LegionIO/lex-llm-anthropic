@@ -42,6 +42,46 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Provider do
     end
   end
 
+  describe '#render_payload' do
+    let(:provider) do
+      described_class.new({
+                            anthropic_api_key:         'test-key',
+                            request_timeout:           30,
+                            max_retries:               0,
+                            retry_interval:            0,
+                            retry_backoff_factor:      0,
+                            retry_interval_randomness: 0
+                          })
+    end
+
+    # /v1/models-discovered models carry no max_output_tokens metadata, so
+    # Model::Info#max_tokens is nil. The Messages API requires max_tokens on
+    # every request — the registered instance default (4096) must fill it in
+    # instead of .compact dropping the key (400 from the API).
+    def render_for(model)
+      messages = [Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')]
+      provider.send(:render_payload, messages, tools: {}, temperature: nil, model: model,
+                                             stream: false, schema: nil, thinking: nil, tool_prefs: nil)
+    end
+
+    it 'includes the registered default max_tokens when the model has no max_output_tokens metadata' do
+      model = Legion::Extensions::Llm::Model::Info.new(
+        id: 'claude-sonnet-4-6', provider: :anthropic, capabilities: %i[completion]
+      )
+      payload = render_for(model)
+      expect(payload[:max_tokens]).to eq(4096)
+    end
+
+    it 'prefers the model metadata max_tokens when present' do
+      model = Legion::Extensions::Llm::Model::Info.new(
+        id: 'claude-sonnet-4-6', provider: :anthropic, capabilities: %i[completion],
+        metadata: { max_output_tokens: 8192 }
+      )
+      payload = render_for(model)
+      expect(payload[:max_tokens]).to eq(8192)
+    end
+  end
+
   describe '#build_chunk bridge' do
     let(:provider) do
       described_class.new({

@@ -20,6 +20,7 @@ unless defined?(Legion::Extensions::Actors::Subscription)
 end
 
 require 'legion/extensions/llm/anthropic'
+require 'legion/extensions/llm/anthropic/runners/fleet_worker'
 require 'legion/extensions/llm/fleet/provider_responder'
 
 module Legion
@@ -28,9 +29,14 @@ module Legion
       module Anthropic
         module Actor
           # Subscription actor for Anthropic fleet request consumption.
+          #
+          # The Subscription dispatch path (use_runner? = false) sends the
+          # decoded message as kwargs directly to runner_class, so the runner
+          # must be a resolvable module constant and its entry point must
+          # accept the message as keyword arguments.
           class FleetWorker < Legion::Extensions::Actors::Subscription
             def runner_class
-              'Legion::Extensions::Llm::Anthropic::Runners::FleetWorker'
+              Legion::Extensions::Llm::Anthropic::Runners::FleetWorker
             end
 
             def runner_function

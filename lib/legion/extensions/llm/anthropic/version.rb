@@ -4,7 +4,7 @@ module Legion
   module Extensions
     module Llm
       module Anthropic
-        VERSION = '0.2.28'
+        VERSION = '0.3.4'
       end
     end
   end

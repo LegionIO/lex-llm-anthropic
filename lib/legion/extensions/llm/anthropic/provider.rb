@@ -12,16 +12,10 @@ module Legion
           include Legion::Logging::Helper
 
           class << self
-            attr_writer :registry_publisher
-
             def slug = 'anthropic'
             def configuration_options = %i[anthropic_api_key anthropic_api_base anthropic_version]
             def configuration_requirements = %i[anthropic_api_key]
             def capabilities = Capabilities
-
-            def registry_publisher
-              @registry_publisher ||= Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :anthropic)
-            end
           end
 
           # Capability predicates for Anthropic chat model offerings.
@@ -46,7 +40,7 @@ module Legion
           def headers
             identity_headers.merge({
               'x-api-key'         => config.anthropic_api_key,
-              'anthropic-version' => config.anthropic_version || settings[:api_version] || '2023-06-01'
+              'anthropic-version' => config.anthropic_version || settings.dig(:instances, :default, :api_version)
             }.compact)
           end
 
@@ -73,9 +67,7 @@ module Legion
             return filter_cached_offerings(Array(@cached_offerings), filters) unless live
 
             provider_health = health(live:)
-            readiness = discovery_registry_readiness(provider_health, live:)
             @cached_offerings = Array(list_models(live:, **filters)).filter_map do |model|
-              self.class.registry_publisher.publish_models_async([model], readiness:)
               next unless model_matches_filters?(model, filters)
               next unless model_allowed?(model.id)
 
@@ -105,16 +97,6 @@ module Legion
 
           private
 
-          def discovery_registry_readiness(provider_health, live:)
-            {
-              provider:   slug.to_sym,
-              configured: configured?,
-              ready:      provider_health[:ready] == true,
-              live:       live,
-              health:     provider_health
-            }
-          end
-
           def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:)
             log_render_payload(messages:, tools:, model:, stream:, schema:)
             system_messages, chat_messages = messages.partition { |message| message.role == :system }
@@ -127,7 +109,7 @@ module Legion
               model:         model.id,
               messages:      format_messages(chat_messages, thinking: thinking_enabled?(thinking), cacheable_count:),
               stream:        stream,
-              max_tokens:    model.max_tokens || settings[:default_max_tokens] || 4096,
+              max_tokens:    model.max_tokens || default_max_tokens,
               system:        system_content(system_messages, cache: caching),
               thinking:      thinking_payload(thinking),
               temperature:   temperature,
@@ -135,6 +117,14 @@ module Legion
               tool_choice:   tool_choice(tool_prefs),
               output_config: output_config(schema)
             }.compact
+          end
+
+          # The Messages API requires max_tokens on every request. /v1/models
+          # metadata does not carry it, so models discovered live fall back to
+          # the registered instance default (nested under instances.default,
+          # mirroring the Translator read — the top-level key does not exist).
+          def default_max_tokens
+            settings.dig(:instances, :default, :default_max_tokens)
           end
 
           def log_render_payload(messages:, tools:, model:, stream:, schema:)
