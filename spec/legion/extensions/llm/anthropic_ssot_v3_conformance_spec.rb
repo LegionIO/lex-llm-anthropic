@@ -945,12 +945,11 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   # ─── No default model/provider ──────────────────────────────────────────────
 
   describe 'no default model or provider' do
-    it 'rejects instance_id "default" as reserved' do
-      expect do
-        Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
-          provider_family: :anthropic, instance_id: 'default'
-        )
-      end.to raise_error(Legion::Extensions::Llm::Inventory::Errors::ValidationError)
+    it 'permits "default" as an explicit instance_id' do
+      key = Legion::Extensions::Llm::Inventory::Identity::InstanceKey.new(
+        provider_family: :anthropic, instance_id: 'default'
+      )
+      expect(key.instance_id).to eq('default')
     end
 
     it 'rejects nil instance_id' do
