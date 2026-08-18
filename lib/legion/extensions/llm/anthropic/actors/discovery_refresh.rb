@@ -694,7 +694,7 @@ module Legion
               return nil if normalized[:enabled] == false
 
               if unconfigured_default?(name:, normalized:)
-                log.warn("[anthropic][actor] action=skip_instance instance=#{name} reason=synthetic_default")
+                warn_unconfigured_default
                 return nil
               end
 
@@ -721,6 +721,16 @@ module Legion
               @normalized_synthetic_default_instance ||= normalize_instance_config(
                 config: Legion::Extensions::Llm::Anthropic.default_settings.dig(:instances, :default) || {}
               )
+            end
+
+            # Warns once per actor lifetime so the skip is loud without
+            # spamming every discovery tick — an unconfigured provider is the
+            # normal state, so a per-tick warn is log noise, not a warning.
+            def warn_unconfigured_default
+              return if @unconfigured_default_warned
+
+              @unconfigured_default_warned = true
+              log.warn('[anthropic][actor] action=skip_instance instance=default reason=synthetic_default')
             end
 
             # env:// references resolve through the canonical credential source

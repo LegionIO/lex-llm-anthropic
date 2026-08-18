@@ -298,11 +298,22 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
 
       actor = described_class.new
 
+      # The skip warn must fire exactly once per actor lifetime, not on
+      # every tick (an unconfigured provider is the normal state).
+      warnings = []
+      fake_log = Object.new
+      fake_log.define_singleton_method(:warn) { |message = nil, **| warnings << message.to_s }
+      allow(actor).to receive(:log).and_return(fake_log)
+
       # Provider-layer decision: the unmodified template is not claimable.
       claimable = actor.send(:configured_instances)
       expect(claimable.keys).to eq([:primary])
 
       actor.manual
+
+      skip_warnings = warnings.select { |m| m.include?('reason=synthetic_default') }
+      expect(skip_warnings.size).to eq(1), 'the template skip must be loud but not per-tick spam'
+      expect(skip_warnings.first).to include('instance=default')
 
       statuses = registry.snapshot.each_publication_status.to_a
       expect(statuses.size).to eq(1)

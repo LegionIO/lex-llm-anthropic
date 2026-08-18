@@ -23,6 +23,9 @@
 - **Single actor registration** — The provider module no longer extends Core at file level, so the
   boot-time submodule walk skips it and the gem's own top-level extension load is the sole actor
   registration (eliminates the double-claim / `FencedPublisherError`).
+- **Synthetic-default skip warn now fires once per boot** — The `synthetic_default` skip warning
+  (unmodified `instances.default` template) is throttled to once per actor lifetime instead of
+  every discovery tick (was permanent WARN noise — an unconfigured provider is the normal state).
 
 ## [0.3.2] - 2026-08-13
 
