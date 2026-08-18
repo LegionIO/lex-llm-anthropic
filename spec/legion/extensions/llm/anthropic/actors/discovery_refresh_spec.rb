@@ -272,19 +272,16 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
     end
   end
 
-  # ── synthetic template default (v2 parity) ────────────────────────────────
-  # The skip is TEMPLATE-CONDITIONAL, never on the name alone: provider_settings
-  # nests the provider's own instance defaults under instances.default, and that
-  # unmodified synthetic entry is the only 'default' discovery skips. v2 accepted
-  # 'default' as a plain instance label — a configured default reaches the claim
-  # path (v2 parity).
+  # ── default instance (v2 parity) ──────────────────────────────────────────
+  # A config name of `default` has no special claimability behavior. Normal
+  # enabled and credential validation determines whether it is activated.
 
   let(:synthetic_default) do
     Legion::Extensions::Llm::Anthropic.default_settings.dig(:instances, :default)
   end
 
-  describe 'synthetic template default' do
-    it 'excludes the unmodified template default from the claimable set and only claims configured instances' do
+  describe 'default instance' do
+    it 'uses normal credential validation for the unmodified template and claims configured instances' do
       seed_anthropic_settings({
                                 instances: {
                                   default: synthetic_default,
@@ -298,22 +295,12 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
 
       actor = described_class.new
 
-      # The skip warn must fire exactly once per actor lifetime, not on
-      # every tick (an unconfigured provider is the normal state).
-      warnings = []
-      fake_log = Object.new
-      fake_log.define_singleton_method(:warn) { |message = nil, **| warnings << message.to_s }
-      allow(actor).to receive(:log).and_return(fake_log)
-
-      # Provider-layer decision: the unmodified template is not claimable.
+      # The unconfigured template has no resolved credential, while primary
+      # remains claimable through the same normal validation path.
       claimable = actor.send(:configured_instances)
       expect(claimable.keys).to eq([:primary])
 
       actor.manual
-
-      skip_warnings = warnings.select { |m| m.include?('reason=synthetic_default') }
-      expect(skip_warnings.size).to eq(1), 'the template skip must be loud but not per-tick spam'
-      expect(skip_warnings.first).to include('instance=default')
 
       statuses = registry.snapshot.each_publication_status.to_a
       expect(statuses.size).to eq(1)
@@ -323,7 +310,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
       expect(statuses.first.instance_key).to eq(primary_key)
       expect(statuses.first.state).to eq(:complete)
 
-      # The synthetic phantom is never claimed and gets no health display.
+      # The credential-less template is not claimed and gets no health display.
       expect(health_for(:default)).to be_nil
       expect(health_for(:primary)[:available]).to eq(true)
     end

@@ -677,7 +677,7 @@ module Legion
               return instances unless cfg_instances.is_a?(Hash)
 
               cfg_instances.each do |name, config|
-                normalized = claimable_instance_config(name:, config:)
+                normalized = claimable_instance_config(config:)
                 instances[name.to_sym] = normalized unless normalized.nil?
               rescue StandardError => e
                 handle_exception(e, level: :warn, operation: 'anthropic.actor.normalize_instance',
@@ -687,16 +687,11 @@ module Legion
               instances
             end
 
-            def claimable_instance_config(name:, config:)
+            def claimable_instance_config(config:)
               return nil unless config.is_a?(Hash)
 
               normalized = normalize_instance_config(config: config)
               return nil if normalized[:enabled] == false
-
-              if unconfigured_default?(name:, normalized:)
-                warn_unconfigured_default
-                return nil
-              end
 
               api_key = resolved_api_key(normalized[:anthropic_api_key])
               if api_key.nil?
@@ -721,16 +716,6 @@ module Legion
               @normalized_synthetic_default_instance ||= normalize_instance_config(
                 config: Legion::Extensions::Llm::Anthropic.default_settings.dig(:instances, :default) || {}
               )
-            end
-
-            # Warns once per actor lifetime so the skip is loud without
-            # spamming every discovery tick — an unconfigured provider is the
-            # normal state, so a per-tick warn is log noise, not a warning.
-            def warn_unconfigured_default
-              return if @unconfigured_default_warned
-
-              @unconfigured_default_warned = true
-              log.warn('[anthropic][actor] action=skip_instance instance=default reason=synthetic_default')
             end
 
             # env:// references resolve through the canonical credential source
