@@ -19,6 +19,11 @@
 - **lex-llm floor raised to 0.7.1** — Requires the SSOT v3 inventory foundation with config-name
   `instance_id` + secondary `physical_id` support on `InstanceKey` and the publisher API.
 
+### Fixed
+- **Single actor registration** — The provider module no longer extends Core at file level, so the
+  boot-time submodule walk skips it and the gem's own top-level extension load is the sole actor
+  registration (eliminates the double-claim / `FencedPublisherError`).
+
 ## [0.3.2] - 2026-08-13
 
 ### Fixed
