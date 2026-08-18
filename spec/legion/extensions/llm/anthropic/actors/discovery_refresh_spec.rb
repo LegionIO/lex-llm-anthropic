@@ -184,8 +184,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
         expect(statuses.first.state).to eq(:complete)
 
         # Skipped instances are never claimed and get no health display. The
-        # credential-less :default is both a reserved name and credential-less
-        # — it is skipped either way.
+        # credential-less :default is skipped for its unresolvable env://
+        # credential (it is a modified entry, not the unmodified synthetic
+        # template, so the synthetic-default skip does not apply to it).
         expect(health_for(:default)).to be_nil
         expect(health_for(:disabled)).to be_nil
       ensure
@@ -271,17 +272,22 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
     end
   end
 
-  # ── reserved instance name ────────────────────────────────────────────────
+  # ── synthetic template default (v2 parity) ────────────────────────────────
+  # The skip is TEMPLATE-CONDITIONAL, never on the name alone: provider_settings
+  # nests the provider's own instance defaults under instances.default, and that
+  # unmodified synthetic entry is the only 'default' discovery skips. v2 accepted
+  # 'default' as a plain instance label — a configured default reaches the claim
+  # path (v2 parity).
 
-  describe 'reserved instance name' do
-    it 'skips an instance named "default" even with a credential (foundation reserves the id)' do
+  let(:synthetic_default) do
+    Legion::Extensions::Llm::Anthropic.default_settings.dig(:instances, :default)
+  end
+
+  describe 'synthetic template default' do
+    it 'excludes the unmodified template default from the claimable set and only claims configured instances' do
       seed_anthropic_settings({
                                 instances: {
-                                  default: {
-                                    enabled:  true,
-                                    endpoint: 'https://api.anthropic.com',
-                                    api_key:  'sk-ant-reserved'
-                                  },
+                                  default: synthetic_default,
                                   primary: {
                                     enabled:  true,
                                     endpoint: 'https://primary.internal:8443',
@@ -291,6 +297,11 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
                               })
 
       actor = described_class.new
+
+      # Provider-layer decision: the unmodified template is not claimable.
+      claimable = actor.send(:configured_instances)
+      expect(claimable.keys).to eq([:primary])
+
       actor.manual
 
       statuses = registry.snapshot.each_publication_status.to_a
@@ -301,9 +312,32 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
       expect(statuses.first.instance_key).to eq(primary_key)
       expect(statuses.first.state).to eq(:complete)
 
-      # The reserved-name instance is never claimed and gets no health display.
+      # The synthetic phantom is never claimed and gets no health display.
       expect(health_for(:default)).to be_nil
       expect(health_for(:primary)[:available]).to eq(true)
+    end
+
+    it 'treats a configured default (real key) as claimable at the provider layer' do
+      seed_anthropic_settings({
+                                instances: {
+                                  default: {
+                                    enabled:  true,
+                                    endpoint: 'https://api.anthropic.com',
+                                    api_key:  'sk-ant-configured-default'
+                                  }
+                                }
+                              })
+
+      actor = described_class.new
+      claimable = actor.send(:configured_instances)
+
+      # Provider-layer decision: a modified default passes discovery and
+      # reaches the claim path (v2 parity — 'default' is a plain instance
+      # label). Whether the foundation's InstanceKey accepts the name is a
+      # lex-llm contract, not a provider-layer decision — so this spec asserts
+      # the claimable set, not an end-to-end claim.
+      expect(claimable.keys).to eq([:default])
+      expect(claimable[:default][:anthropic_api_key]).to eq('sk-ant-configured-default')
     end
   end
 

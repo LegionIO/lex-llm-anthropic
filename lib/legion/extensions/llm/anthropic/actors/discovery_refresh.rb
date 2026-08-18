@@ -52,13 +52,6 @@ module Legion
             # mirroring the legacy discover_instances output.
             INSTANCE_CAPABILITIES = %i[completion streaming vision tools].freeze
 
-            # Config names the inventory foundation reserves as InstanceKey
-            # instance_id values. "default" is the synthetic settings bucket
-            # (discovery_interval is registered under instances.default); a
-            # reserved name can never be claimed — InstanceKey raises
-            # ValidationError for it.
-            RESERVED_INSTANCE_NAMES = %w[default].freeze
-
             def runner_class    = self.class
             def runner_function = 'manual'
             def run_now?        = true
@@ -667,20 +660,24 @@ module Legion
 
             # ── Configuration ─────────────────────────────────────────────────
 
-            # Only instances the operator (or the merged provider defaults)
-            # actually configured are claimable. Instances with a reserved
-            # name, enabled: false, or without a resolvable credential are
-            # skipped with a log — claiming a credential-less or
-            # reserved-name instance would never activate.
+            # Only instances the operator actually configured are claimable.
+            # The synthetic instances.default section (provider_settings nests
+            # the provider's own instance defaults there) is skipped with a
+            # warn while it is still the unmodified extension default — an
+            # unconfigured phantom must never be auto-registered. A modified
+            # instances.default (a real API key instead of the env://
+            # placeholder) is a configured instance and reaches the claim
+            # path, as v2 accepted 'default' as a plain instance label.
+            # Instances with enabled: false or without a resolvable
+            # credential are also skipped with a log — claiming them would
+            # never activate.
             def configured_instances
               instances = {}
               cfg_instances = settings[:instances]
               return instances unless cfg_instances.is_a?(Hash)
 
               cfg_instances.each do |name, config|
-                next unless claimable_instance_name?(name)
-
-                normalized = claimable_instance_config(config:)
+                normalized = claimable_instance_config(name:, config:)
                 instances[name.to_sym] = normalized unless normalized.nil?
               rescue StandardError => e
                 handle_exception(e, level: :warn, operation: 'anthropic.actor.normalize_instance',
@@ -690,21 +687,16 @@ module Legion
               instances
             end
 
-            # A reserved config name is unclaimable by construction; skipping
-            # it here (instead of raising in the claim) keeps the per-tick
-            # reconcile from re-attempting a guaranteed ValidationError.
-            def claimable_instance_name?(name)
-              return true unless RESERVED_INSTANCE_NAMES.include?(name.to_s)
-
-              log.warn("[anthropic][actor] action=skip_instance instance=#{name} reason=reserved_instance_name")
-              false
-            end
-
-            def claimable_instance_config(config:)
+            def claimable_instance_config(name:, config:)
               return nil unless config.is_a?(Hash)
 
               normalized = normalize_instance_config(config: config)
               return nil if normalized[:enabled] == false
+
+              if unconfigured_default?(name:, normalized:)
+                log.warn("[anthropic][actor] action=skip_instance instance=#{name} reason=synthetic_default")
+                return nil
+              end
 
               api_key = resolved_api_key(normalized[:anthropic_api_key])
               if api_key.nil?
@@ -714,6 +706,21 @@ module Legion
 
               normalized[:anthropic_api_key] = api_key
               normalized
+            end
+
+            # The synthetic default is the provider's OWN registered instance
+            # defaults (endpoint https://api.anthropic.com + the
+            # env://ANTHROPIC_API_KEY placeholder credential), deep-merged
+            # into instances.default by provider_settings. It is
+            # "configured" only when the operator changed something.
+            def unconfigured_default?(name:, normalized:)
+              name.to_sym == :default && normalized == normalized_synthetic_default_instance
+            end
+
+            def normalized_synthetic_default_instance
+              @normalized_synthetic_default_instance ||= normalize_instance_config(
+                config: Legion::Extensions::Llm::Anthropic.default_settings.dig(:instances, :default) || {}
+              )
             end
 
             # env:// references resolve through the canonical credential source
