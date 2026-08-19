@@ -144,9 +144,9 @@ module Legion
           def format_messages(messages, thinking:, cacheable_count: 0)
             messages.each_with_index.map do |message, index|
               cache = index < cacheable_count
-              if message.tool_call?
+              if message_tool_call?(message)
                 format_tool_call_message(message, thinking:, cache:)
-              elsif message.tool_result?
+              elsif message_tool_result?(message)
                 format_tool_result_message(message, cache:)
               else
                 {
@@ -207,8 +207,16 @@ module Legion
           def with_thinking(blocks, message, enabled)
             return blocks unless enabled && message&.role == :assistant
 
-            thinking_block = thinking_block(message.thinking)
+            thinking_block = thinking_block(message.respond_to?(:thinking) ? message.thinking : nil)
             thinking_block ? [thinking_block, *blocks] : blocks
+          end
+
+          def message_tool_call?(message)
+            !message.tool_calls.nil? && !message.tool_calls.empty?
+          end
+
+          def message_tool_result?(message)
+            !message.tool_call_id.nil? && !message.tool_call_id.to_s.empty?
           end
 
           def format_tool_call_message(message, thinking:, cache:)

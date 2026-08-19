@@ -13,6 +13,7 @@ require 'legion/extensions/llm/inventory/records'
 require 'legion/extensions/llm/inventory/evidence'
 require 'legion/extensions/llm/inventory/probe_coordinator'
 require 'legion/extensions/llm/inventory/scoped_refresher'
+require 'legion/extensions/llm/inventory/weight_reconciler'
 require 'legion/extensions/llm/routing/provider_outcome'
 require 'legion/extensions/llm/taxonomies'
 require 'legion/extensions/llm/capabilities'
@@ -51,6 +52,10 @@ module Legion
             # Per-instance capabilities advertised in the settings health display,
             # mirroring the legacy discover_instances output.
             INSTANCE_CAPABILITIES = %i[completion streaming vision tools].freeze
+            SCALAR_EVIDENCE_FIELDS = %i[
+              context_evidence max_output_evidence embedding_dimensions_evidence
+              model_revision_evidence tokenizer_evidence
+            ].freeze
 
             def runner_class    = self.class
             def runner_function = 'manual'
@@ -115,10 +120,17 @@ module Legion
               end
             end
 
+            def dormant_weight_tracker
+              @dormant_weight_tracker ||= Legion::Extensions::Llm::Inventory::DormantWeightTracker.new
+            end
+
             # ── Initial discovery ─────────────────────────────────────────────
 
             def initial_discovery
-              with_instance_states { @instance_states = {} }
+              with_instance_states do |states|
+                states.clear
+                dormant_weight_tracker.clear!
+              end
               configured_instances.each do |name, instance_cfg|
                 claim_and_activate_instance(name:, instance_cfg:)
               rescue StandardError => e
@@ -136,6 +148,10 @@ module Legion
                 provider_family: :anthropic, instance_id: instance_id, physical_id: physical_id
               )
 
+              # Validate the complete offering set before allocating any
+              # callable, probe coordinator, publisher token, or local state.
+              offerings = discover_offerings_for_instance(instance_cfg:, instance_key:)
+
               callable = AnthropicCallable.new(instance_cfg: instance_cfg, logger: log)
               probe_coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
                 instance_key: instance_key,
@@ -149,7 +165,23 @@ module Legion
                 physical_id:          physical_id
               )
 
-              offerings = discover_offerings_for_instance(instance_cfg:, instance_key:)
+              state = {
+                name:              name,
+                instance_key:      instance_key,
+                physical_id:       physical_id,
+                instance_cfg:      instance_cfg,
+                callable:          callable,
+                probe_coordinator: probe_coordinator,
+                publisher_token:   publisher_token,
+                sequence:          0,
+                offerings:         offerings,
+                signature:         offering_signature(offerings),
+                published:         false
+              }
+              states = with_instance_states { |instance_states| instance_states }
+              Legion::Extensions::Llm::Inventory::WeightReconciler.track_initializing!(
+                states: states, state_key: instance_id, state: state, mutex: state_mutex
+              )
 
               probe_token = publisher.readiness_probe_started(
                 instance_id:     instance_id,
@@ -160,15 +192,14 @@ module Legion
               readiness = check_readiness(instance_cfg:)
 
               if readiness.ready?
-                publisher.activate_instance_snapshot(
-                  instance_id:     instance_id,
-                  publisher_token: publisher_token,
-                  offerings:       offerings,
-                  sequence:        0,
-                  probe_token:     probe_token,
-                  physical_id:     physical_id
+                activated = Legion::Extensions::Llm::Inventory::WeightReconciler.activate_tracked!(
+                  settings: Legion::Settings, instance_id: instance_id, state_key: instance_id,
+                  state: state, states: states, mutex: state_mutex, probe_token: probe_token,
+                  activate: method(:activate_weight_snapshot),
+                  activation_sequence: ->(tracked) { tracked.fetch(:sequence) },
+                  stable_signature: method(:offering_signature)
                 )
-                write_instance_display(name: name, ready: true, reason: readiness.reason)
+                write_instance_display(name: name, ready: true, reason: readiness.reason) if activated
               else
                 publisher.readiness_failed(
                   instance_id: instance_id,
@@ -178,21 +209,6 @@ module Legion
                 )
                 write_instance_display(name: name, ready: false, reason: readiness.reason)
               end
-
-              with_instance_states do
-                @instance_states[instance_id] = {
-                  name:              name,
-                  instance_key:      instance_key,
-                  physical_id:       physical_id,
-                  instance_cfg:      instance_cfg,
-                  callable:          callable,
-                  probe_coordinator: probe_coordinator,
-                  publisher_token:   publisher_token,
-                  sequence:          0,
-                  offerings:         offerings,
-                  signature:         offering_signature(offerings)
-                }
-              end
             end
 
             # ── Tick refresh ──────────────────────────────────────────────────
@@ -200,6 +216,7 @@ module Legion
             def tick_refresh
               reconcile_instances
               refresh_tracked_instances
+              observe_dormant_weights
             end
 
             # Re-scan configured instances each tick so instances added or removed
@@ -258,6 +275,7 @@ module Legion
                 instance_cfg: state[:instance_cfg],
                 instance_key: state[:instance_key]
               )
+              cache_discovered_offerings(instance_id:, state:, offerings:)
               probe_token = publisher.readiness_probe_started(
                 instance_id:     instance_id,
                 publisher_token: state[:publisher_token],
@@ -266,19 +284,15 @@ module Legion
               readiness = check_readiness(instance_cfg: state[:instance_cfg])
 
               if readiness.ready?
-                publisher.activate_instance_snapshot(
-                  instance_id:     instance_id,
-                  publisher_token: state[:publisher_token],
-                  offerings:       offerings,
-                  sequence:        0,
-                  probe_token:     probe_token,
-                  physical_id:     state[:physical_id]
+                states = with_instance_states { |instance_states| instance_states }
+                activated = Legion::Extensions::Llm::Inventory::WeightReconciler.activate_tracked!(
+                  settings: Legion::Settings, instance_id: instance_id, state_key: instance_id,
+                  state: state, states: states, mutex: state_mutex, probe_token: probe_token,
+                  activate: method(:activate_weight_snapshot),
+                  activation_sequence: ->(tracked) { tracked.fetch(:sequence) },
+                  stable_signature: method(:offering_signature)
                 )
-                with_instance_states do
-                  state[:offerings] = offerings
-                  state[:signature] = offering_signature(offerings)
-                end
-                write_instance_display(name: state[:name], ready: true, reason: readiness.reason)
+                write_instance_display(name: state[:name], ready: true, reason: readiness.reason) if activated
               else
                 publisher.readiness_failed(
                   instance_id: instance_id,
@@ -298,29 +312,85 @@ module Legion
                 instance_cfg: state[:instance_cfg],
                 instance_key: state[:instance_key]
               )
-              new_signature = offering_signature(new_offerings)
-              return if new_signature == state[:signature]
-
-              sequence = with_instance_states do
-                state[:sequence] += 1
-                state[:sequence]
-              end
-              publisher.replace_instance_snapshot(
-                instance_id:     instance_id,
-                publisher_token: state[:publisher_token],
-                offerings:       new_offerings,
-                sequence:        sequence,
-                physical_id:     state[:physical_id]
+              changed = Legion::Extensions::Llm::Inventory::WeightReconciler.commit_if_changed!(
+                settings: Legion::Settings, instance_id: instance_id, state: state,
+                discovered_offerings: new_offerings, mutex: state_mutex,
+                equivalent: lambda { |previous, current|
+                  offering_signature(previous) == offering_signature(current)
+                },
+                replace: method(:replace_weight_snapshot),
+                stable_signature: method(:offering_signature)
               )
-              with_instance_states do
-                state[:offerings] = new_offerings
-                state[:signature] = new_signature
+              published = with_instance_states do |states|
+                states[instance_id].equal?(state) && state[:published]
               end
-              write_instance_display(name: state[:name], ready: true, reason: 'offerings refreshed')
+              write_instance_display(name: state[:name], ready: true, reason: 'offerings refreshed') \
+                if changed && published
+              changed
+            end
+
+            def cache_discovered_offerings(instance_id:, state:, offerings:)
+              Legion::Extensions::Llm::Inventory::WeightReconciler.commit_if_changed!(
+                settings: Legion::Settings, instance_id: instance_id, state: state,
+                discovered_offerings: offerings, mutex: state_mutex,
+                equivalent: lambda { |previous, current|
+                  offering_signature(previous) == offering_signature(current)
+                },
+                replace: method(:replace_weight_snapshot),
+                stable_signature: method(:offering_signature)
+              )
+            end
+
+            def replace_weight_snapshot(instance_id:, state:, offerings:, sequence:)
+              publisher.replace_instance_snapshot(
+                instance_id: instance_id, publisher_token: state.fetch(:publisher_token),
+                offerings: offerings, sequence: sequence, physical_id: state.fetch(:physical_id)
+              )
+            end
+
+            def activate_weight_snapshot(instance_id:, state:, offerings:, sequence:, probe_token:)
+              publisher.activate_instance_snapshot(
+                instance_id: instance_id, publisher_token: state.fetch(:publisher_token),
+                offerings: offerings, sequence: sequence, probe_token: probe_token,
+                physical_id: state.fetch(:physical_id)
+              )
             end
 
             def offering_signature(offerings)
-              offerings.map { |offering| [offering.model, offering.tier] }.sort.freeze
+              # A tally is an order-independent multiset: catalog reordering is
+              # stable while duplicate offerings remain visible to comparison.
+              offerings.map { |offering| stable_offering_state(offering) }.tally.freeze
+            end
+
+            def stable_offering_state(offering)
+              state = offering.to_h
+              state[:operation_evidence] = stable_evidence_map(offering.operation_evidence)
+              state[:capability_evidence] = stable_evidence_map(offering.capability_evidence)
+              SCALAR_EVIDENCE_FIELDS.each do |field|
+                state[field] = stable_evidence(offering.public_send(field))
+              end
+              state.freeze
+            end
+
+            def stable_evidence_map(evidence)
+              evidence.transform_values { |entry| stable_evidence(entry) }.freeze
+            end
+
+            def stable_evidence(evidence)
+              evidence.to_h.except(:observed_at).freeze
+            end
+
+            def observe_dormant_weights
+              states = with_instance_states { |instance_states| instance_states }
+              Legion::Extensions::Llm::Inventory::WeightReconciler.observe_dormant!(
+                settings: Legion::Settings, provider_family: :anthropic, states: states,
+                mutex: state_mutex, tracker: dormant_weight_tracker,
+                dormant_logger: lambda { |key|
+                  log.info(
+                    "[llm][anthropic] action=dormant_weight weight_key=#{key.inspect} no_lane_published=true"
+                  )
+                }
+              )
             end
 
             # ── Readiness probing ─────────────────────────────────────────────
@@ -449,7 +519,7 @@ module Legion
                   instance_key: instance_key
                 )
               end
-            rescue StandardError => e
+            rescue Faraday::Error, Legion::JSON::ParseError => e
               handle_exception(e, level: :warn, operation: 'anthropic.actor.discover_offerings')
               []
             end
@@ -466,6 +536,10 @@ module Legion
 
             def build_offering_draft(model_id:, model_data:, instance_cfg:, instance_key:)
               tier = instance_cfg[:tier] || :frontier
+              weight_inputs = Legion::Extensions::Llm::Inventory::WeightSchema.weight_inputs(
+                settings: Legion::Settings, instance_key: instance_key,
+                provider_native_key: model_id, model: model_id, tier: tier
+              )
 
               Legion::Extensions::Llm::Inventory::OfferingDraft.new(
                 provider_native_key:           model_id,
@@ -480,7 +554,9 @@ module Legion
                 tokenizer_evidence:            absent_value_evidence,
                 quota_domains:                 {},
                 metadata:                      { raw_model: model_id, instance_id: instance_key.instance_id }.freeze,
-                publication_source:            :provider_catalog
+                publication_source:            :provider_catalog,
+                weight_inputs:                 weight_inputs,
+                base_weight:                   Legion::Extensions::Llm::Inventory::WeightSchema.base_weight(weight_inputs)
               )
             end
 
@@ -638,21 +714,33 @@ module Legion
             def remove_all_instances
               tracked = with_instance_states { @instance_states.dup }
               tracked.each_value { |state| retire_instance(state) }
-              with_instance_states { @instance_states.clear }
+              with_instance_states do |states|
+                states.clear
+                dormant_weight_tracker.clear!
+              end
             end
 
             # Retire one instance: remove it from the registry, drop the local
             # state, clear its settings display, and close its callable.
             def retire_instance(state)
               instance_id = state[:instance_key].instance_id
-              publisher.remove_instance(
-                instance_id:     instance_id,
-                publisher_token: state[:publisher_token],
-                physical_id:     state[:physical_id]
-              )
-              with_instance_states { @instance_states.delete(instance_id) }
+              removed = state_mutex.synchronize do
+                @instance_states ||= {}
+                next false unless @instance_states[instance_id].equal?(state)
+
+                publisher.remove_instance(
+                  instance_id:     instance_id,
+                  publisher_token: state[:publisher_token],
+                  physical_id:     state[:physical_id]
+                )
+                @instance_states.delete(instance_id)
+                true
+              end
+              return false unless removed
+
               clear_instance_display(name: state[:name])
               state[:callable]&.disconnect
+              true
             rescue StandardError => e
               handle_exception(e, level: :warn, operation: 'anthropic.actor.retire_instance',
                                   instance_id: instance_id)

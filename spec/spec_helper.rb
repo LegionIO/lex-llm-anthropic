@@ -8,6 +8,9 @@ require 'bundler/setup'
 # testing instead of being skipped by the actor file's runtime guard.
 require_relative 'support/actor_runtime_stubs'
 
+require 'legion/logging'
+Legion::Logging.setup(level: nil, log_file: File::NULL, log_stdout: false, async: false)
+
 require 'legion/extensions/llm'
 require 'legion/extensions/llm/anthropic'
 
