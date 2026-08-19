@@ -52,6 +52,10 @@ module Legion
             # Per-instance capabilities advertised in the settings health display,
             # mirroring the legacy discover_instances output.
             INSTANCE_CAPABILITIES = %i[completion streaming vision tools].freeze
+            SCALAR_EVIDENCE_FIELDS = %i[
+              context_evidence max_output_evidence embedding_dimensions_evidence
+              model_revision_evidence tokenizer_evidence
+            ].freeze
 
             def runner_class    = self.class
             def runner_function = 'manual'
@@ -353,9 +357,27 @@ module Legion
             end
 
             def offering_signature(offerings)
-              offerings.map do |offering|
-                [offering.model, offering.tier, offering.weight_inputs, offering.base_weight]
-              end.sort.freeze
+              # A tally is an order-independent multiset: catalog reordering is
+              # stable while duplicate offerings remain visible to comparison.
+              offerings.map { |offering| stable_offering_state(offering) }.tally.freeze
+            end
+
+            def stable_offering_state(offering)
+              state = offering.to_h
+              state[:operation_evidence] = stable_evidence_map(offering.operation_evidence)
+              state[:capability_evidence] = stable_evidence_map(offering.capability_evidence)
+              SCALAR_EVIDENCE_FIELDS.each do |field|
+                state[field] = stable_evidence(offering.public_send(field))
+              end
+              state.freeze
+            end
+
+            def stable_evidence_map(evidence)
+              evidence.transform_values { |entry| stable_evidence(entry) }.freeze
+            end
+
+            def stable_evidence(evidence)
+              evidence.to_h.except(:observed_at).freeze
             end
 
             def observe_dormant_weights

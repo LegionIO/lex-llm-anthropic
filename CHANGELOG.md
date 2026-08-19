@@ -7,6 +7,7 @@
 - **Dependency floor** — Requires `lex-llm >= 0.7.6` for the shared weight schema, immutable record pair, dormant-weight tracker, and atomic reconciler. The existing `legion-settings` floor and lifecycle remain unchanged.
 
 ### Fixed
+- **Complete discovery change detection** — Ordinary discovery cadence now compares the full stable `OfferingDraft` contract, excluding only telemetry-only evidence timestamps. Provider-native identity, evidence authority and metadata, scalar limits, quota domains, offering metadata, publication source, and weights all trigger one atomic replacement when changed; catalog reordering remains stable without collapsing duplicate offerings.
 - **Two-phase publication races** — Offering and weight validation now completes before allocating a callable, probe coordinator, publisher token, registry scope, or local state; malformed weight configuration cannot strand an untracked claim or activate a healthy zero-lane instance. Claimed instances are tracked as unpublished before readiness I/O; removal wins a late-readiness race, and publisher failures leave cached state retryable without sequence drift.
 - **Callable-path system conformance** — The provider formatter now accepts folded canonical messages as well as the legacy message shape. An end-to-end canonical fixture proves a folded leading system message reaches Anthropic's rendered native `system` field.
 

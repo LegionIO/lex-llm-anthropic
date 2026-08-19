@@ -92,6 +92,32 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
     actor.send(:with_instance_states) { |states| states.fetch(instance_id) }
   end
 
+  def authoritative_contract_variant(draft, field)
+    replacement = case field
+                  when :provider_native_key
+                    'claude-native-revision-v2'
+                  when :operation_evidence
+                    draft.operation_evidence.merge(
+                      chat: Legion::Extensions::Llm::Inventory::OperationEvidence.new(
+                        operation: :chat, status: :supported, source: :provider_catalog,
+                        observed_at: Time.now, metadata: { catalog_revision: 'v2' }
+                      )
+                    )
+                  when :context_evidence
+                    Legion::Extensions::Llm::Inventory::ValueEvidence.new(
+                      status: :known, value: 200_000, source: :provider_catalog,
+                      observed_at: Time.now, metadata: { catalog_revision: 'v2' }
+                    )
+                  when :quota_domains
+                    { chat: 'anthropic-chat-v2' }
+                  when :metadata
+                    draft.metadata.merge(catalog_revision: 'v2')
+                  when :publication_source
+                    :provider_control_plane
+                  end
+    draft.with(field => replacement)
+  end
+
   # ── time (D9) ───────────────────────────────────────────────────────────
 
   describe '#time' do
@@ -338,6 +364,65 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
 
       expect(registry.snapshot.publication_status(instance_key: key).published_sequence).to eq(0)
       expect(tracked_state(actor)[:sequence]).to eq(0)
+    end
+
+    %i[
+      provider_native_key operation_evidence context_evidence quota_domains metadata publication_source
+    ].each do |field|
+      it "publishes a #{field} change once and ignores catalog reordering" do
+        seed_instance(:primary, api_key: 'sk-ant-complete-contract')
+        actor = described_class.new
+        instance_cfg = settings_root.dig(:llm, :anthropic, :instances, :primary)
+        key = instance_key_for(name: :primary, api_key: 'sk-ant-complete-contract')
+        first = actor.send(
+          :build_offering_draft, model_id: 'claude-sonnet-4-6', model_data: { id: 'claude-sonnet-4-6' },
+          instance_cfg: instance_cfg, instance_key: key
+        )
+        second = actor.send(
+          :build_offering_draft, model_id: 'claude-haiku-4-5', model_data: { id: 'claude-haiku-4-5' },
+          instance_cfg: instance_cfg, instance_key: key
+        )
+        changed = authoritative_contract_variant(first, field)
+        expect(changed.weight_inputs).to eq(first.weight_inputs)
+        expect(changed.base_weight).to eq(first.base_weight)
+        allow(actor).to receive(:discover_offerings_for_instance)
+          .and_return([first, second], [changed, second], [second, changed])
+        writer = actor.send(:publisher)
+        allow(writer).to receive(:replace_instance_snapshot).and_call_original
+
+        actor.manual
+        actor.manual
+
+        published = registry.snapshot.offerings_for(instance_key: key)
+                            .find { |offering| offering.model == first.model }
+        expect(writer).to have_received(:replace_instance_snapshot).once
+        expect(registry.snapshot.publication_status(instance_key: key).published_sequence).to eq(1)
+        expect(published.public_send(field)).to eq(changed.public_send(field))
+
+        actor.manual
+
+        expect(writer).to have_received(:replace_instance_snapshot).once
+        expect(registry.snapshot.publication_status(instance_key: key).published_sequence).to eq(1)
+      end
+    end
+
+    it 'treats the offering catalog as an order-independent multiset without hiding duplicates' do
+      seed_instance(:primary, api_key: 'sk-ant-complete-contract-multiset')
+      actor = described_class.new
+      instance_cfg = settings_root.dig(:llm, :anthropic, :instances, :primary)
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-complete-contract-multiset')
+      first = actor.send(
+        :build_offering_draft, model_id: 'claude-sonnet-4-6', model_data: { id: 'claude-sonnet-4-6' },
+        instance_cfg: instance_cfg, instance_key: key
+      )
+      second = actor.send(
+        :build_offering_draft, model_id: 'claude-haiku-4-5', model_data: { id: 'claude-haiku-4-5' },
+        instance_cfg: instance_cfg, instance_key: key
+      )
+
+      signature = actor.method(:offering_signature)
+      expect(signature.call([first, first, second])).to eq(signature.call([second, first, first]))
+      expect(signature.call([first, first, second])).not_to eq(signature.call([first, second]))
     end
 
     it 'preserves an explicit zero and rejects false instead of defaulting it' do
