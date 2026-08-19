@@ -924,11 +924,16 @@ module Legion
             end
 
             def chat(messages:, model:, **rest)
+              # Canonical boundary (N x N law): fleet dispatch delivers
+              # Canonical::Message objects only. Native/Hash shapes are the
+              # bypass class (the 2026-08-19 incident) — reject loudly, never coerce.
+              provider.enforce_canonical_messages!(messages)
               provider.chat(messages: messages, model: normalize_model(model),
                                             **dispatch_kwargs(rest, known: CHAT_PROVIDER_KEYS))
             end
 
             def stream_chat(messages:, model:, **rest, &)
+              provider.enforce_canonical_messages!(messages)
               provider.stream_chat(messages: messages, model: normalize_model(model),
                                               **dispatch_kwargs(rest, known: CHAT_PROVIDER_KEYS), &)
             end

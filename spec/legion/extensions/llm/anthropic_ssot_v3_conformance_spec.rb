@@ -1063,8 +1063,10 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     # stubbed), so a missing wrap fails with NoMethodError, not a green stub.
     context 'raw-string model dispatch (D15)' do
       it 'wraps a raw string into a Model::Info and renders without NoMethodError' do
+        # The callable is the fleet dispatch boundary — it receives the
+        # Canonical::Message pipeline shape (not the Chat-facade native Message).
         result = callable.chat(
-          messages: [Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')],
+          messages: [Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello')],
           model:    'claude-sonnet-4-6'
         )
         expect(result).to be_a(Legion::Extensions::Llm::Message)
@@ -1086,22 +1088,38 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
     # Canonical dispatch boundary (N x N law): the 2026-08-19 incident was a
     # plain-Hash message bypass that a lenient provider-side re-canonicalization
-    # masked for 25 failed openai dispatches. The provider render seam now
-    # rejects non-object message shapes loudly, so a Hash never reaches the
-    # Anthropic wire. Canonical::Message (pipeline dispatch) and provider-native
-    # lex-llm Message (Chat facade) both pass; anything else raises.
+    # masked for 25 failed openai dispatches. The callable is the FLEET dispatch
+    # boundary and is canonical-only: it rejects any non-Canonical::Message shape
+    # loudly — a plain Hash AND a Chat-facade native lex-llm Message — so neither
+    # can cross the boundary unexamined. The provider render seam is the backstop
+    # for the in-gem Chat facade (which calls the provider directly with a native
+    # Message) and accepts canonical-or-native; anything else still raises.
     context 'canonical dispatch boundary (loud reject)' do
-      it 'rejects plain Hash messages on chat at the provider boundary' do
+      it 'rejects plain Hash messages on chat at the fleet boundary' do
         hash_messages = [{ role: 'user', content: 'What is the capital of France?' }]
 
         expect { callable.chat(messages: hash_messages, model: 'claude-sonnet-4-6') }
           .to raise_error(ArgumentError, /Canonical::Message/)
       end
 
-      it 'rejects plain Hash messages on stream_chat at the provider boundary' do
+      it 'rejects plain Hash messages on stream_chat at the fleet boundary' do
         hash_messages = [{ role: 'user', content: 'hello' }]
 
         expect { callable.stream_chat(messages: hash_messages, model: 'claude-sonnet-4-6') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+      end
+
+      it 'rejects a Chat-facade native lex-llm Message on chat at the fleet boundary' do
+        native_messages = [Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')]
+
+        expect { callable.chat(messages: native_messages, model: 'claude-sonnet-4-6') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+      end
+
+      it 'rejects a Chat-facade native lex-llm Message on stream_chat at the fleet boundary' do
+        native_messages = [Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')]
+
+        expect { callable.stream_chat(messages: native_messages, model: 'claude-sonnet-4-6') }
           .to raise_error(ArgumentError, /Canonical::Message/)
       end
 
