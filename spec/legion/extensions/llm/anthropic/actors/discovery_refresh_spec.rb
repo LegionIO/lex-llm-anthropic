@@ -3,6 +3,7 @@
 require 'spec_helper'
 require 'faraday'
 require 'json'
+require 'legion/extensions/llm/inventory/weight_reconciler'
 
 RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
   let(:registry) { Legion::Extensions::Llm::Inventory::Registry }
@@ -52,12 +53,13 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
 
   # The actor probes with its own raw Faraday connection (build_api_connection);
   # GET /v1/models is the safe readiness + model-list endpoint.
-  def stub_probe_http(ready: true)
+  def stub_probe_http(ready: true, models: [{ id: 'claude-sonnet-4-6' }, { id: 'claude-haiku-4-5' }], calls: nil)
     allow(Faraday).to receive(:new) do |*_args, &_block|
       connection = instance_double(Faraday::Connection)
       allow(connection).to receive(:get) do |path|
+        calls << path if calls
         if path == '/v1/models' && ready
-          probe_response(200, ::JSON.dump(data: [{ id: 'claude-sonnet-4-6' }, { id: 'claude-haiku-4-5' }]))
+          probe_response(200, ::JSON.dump(data: models))
         else
           probe_response(503, ::JSON.dump(type: 'error', error: { type: 'api_error', message: 'unavailable' }))
         end
@@ -76,6 +78,18 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
 
   def health_for(name)
     settings_root.dig(:llm, :anthropic, :instances, name, :health)
+  end
+
+  def write_tier_weight(value)
+    root_settings = Legion::Settings.loader.settings
+    root_settings[:llm] ||= {}
+    root_settings[:llm][:routing] ||= {}
+    root_settings[:llm][:routing][:tier_weights] ||= {}
+    root_settings[:llm][:routing][:tier_weights][:frontier] = value
+  end
+
+  def tracked_state(actor, instance_id = 'primary')
+    actor.send(:with_instance_states) { |states| states.fetch(instance_id) }
   end
 
   # ── time (D9) ───────────────────────────────────────────────────────────
@@ -235,6 +249,317 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
       expect(registry.snapshot.instance(instance_key: alpha_key)).to be_nil
       expect(registry.snapshot.publication_status(instance_key: alpha_key)).to be_nil
       expect(health_for(:beta)[:available]).to eq(true)
+    end
+  end
+
+  # ── write-time lane weights (Task 03W) ──────────────────────────────────
+
+  describe 'write-time lane weights' do
+    before do
+      tier_weights = Legion::Settings.loader.settings.dig(:llm, :routing, :tier_weights)
+      @frontier_weight_was_defined = tier_weights.is_a?(Hash) && tier_weights.key?(:frontier)
+      @previous_frontier_weight = tier_weights[:frontier] if @frontier_weight_was_defined
+      write_tier_weight(150)
+    end
+
+    after do
+      tier_weights = Legion::Settings.loader.settings.dig(:llm, :routing, :tier_weights)
+      if @frontier_weight_was_defined
+        tier_weights[:frontier] = @previous_frontier_weight
+      else
+        tier_weights.delete(:frontier)
+      end
+    end
+
+    it 'stores the exact four weight inputs and their product on each draft' do
+      seed_anthropic_settings(
+        weight:    200,
+        models:    { 'claude-sonnet-4-6' => { weight: 125 } },
+        instances: {
+          primary: {
+            enabled: true, endpoint: 'https://api.anthropic.com', api_key: 'sk-ant-weight-draft',
+            tier: :frontier, weight: 115
+          }
+        }
+      )
+      actor = described_class.new
+      instance_key = instance_key_for(name: :primary, api_key: 'sk-ant-weight-draft')
+      draft = actor.send(
+        :build_offering_draft,
+        model_id: 'claude-sonnet-4-6', model_data: { id: 'claude-sonnet-4-6' },
+        instance_cfg: settings_root.dig(:llm, :anthropic, :instances, :primary), instance_key: instance_key
+      )
+
+      expect(draft.weight_inputs).to eq(tier: 150, provider: 200, instance: 115, model_or_offering: 125)
+      expect(draft.weight_inputs).to be_frozen
+      expect(draft.base_weight).to eq(431_250_000)
+    end
+
+    it 'publishes one replacement on the next ordinary pass when only a weight changes' do
+      calls = []
+      stub_probe_http(calls: calls)
+      seed_instance(:primary, api_key: 'sk-ant-weight-refresh')
+      actor = described_class.new
+      actor.manual
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-weight-refresh')
+      before_calls = calls.length
+
+      settings_root[:llm][:anthropic][:weight] = 175
+      actor.manual
+
+      status = registry.snapshot.publication_status(instance_key: key)
+      offering = registry.snapshot.offerings_for(instance_key: key).find { |item| item.model == 'claude-sonnet-4-6' }
+      expect(status.published_sequence).to eq(1)
+      expect(offering.weight_inputs[:provider]).to eq(175)
+      expect(offering.base_weight).to eq(262_500_000)
+      expect(calls.length - before_calls).to eq(2)
+    end
+
+    it 'does not publish or advance sequence for a non-weight settings change' do
+      seed_instance(:primary, api_key: 'sk-ant-weight-stable')
+      actor = described_class.new
+      actor.manual
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-weight-stable')
+
+      settings_root[:llm][:anthropic][:request_timeout] = 91
+      actor.manual
+
+      expect(registry.snapshot.publication_status(instance_key: key).published_sequence).to eq(0)
+      expect(tracked_state(actor)[:sequence]).to eq(0)
+    end
+
+    it 'does not publish or advance sequence across ten unchanged ordinary passes' do
+      seed_instance(:primary, api_key: 'sk-ant-weight-ten-stable')
+      actor = described_class.new
+      actor.manual
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-weight-ten-stable')
+
+      10.times { actor.manual }
+
+      expect(registry.snapshot.publication_status(instance_key: key).published_sequence).to eq(0)
+      expect(tracked_state(actor)[:sequence]).to eq(0)
+    end
+
+    it 'preserves an explicit zero and rejects false instead of defaulting it' do
+      seed_instance(:primary, api_key: 'sk-ant-weight-values', weight: 0)
+      actor = described_class.new
+      instance_key = instance_key_for(name: :primary, api_key: 'sk-ant-weight-values')
+      instance_cfg = settings_root.dig(:llm, :anthropic, :instances, :primary)
+      zero_draft = actor.send(
+        :build_offering_draft,
+        model_id: 'claude-sonnet-4-6', model_data: { id: 'claude-sonnet-4-6' },
+        instance_cfg: instance_cfg, instance_key: instance_key
+      )
+      expect(zero_draft.weight_inputs[:instance]).to eq(0)
+      expect(zero_draft.base_weight).to eq(0)
+
+      instance_cfg[:weight] = false
+      expect do
+        actor.send(
+          :build_offering_draft,
+          model_id: 'claude-sonnet-4-6', model_data: { id: 'claude-sonnet-4-6' },
+          instance_cfg: instance_cfg, instance_key: instance_key
+        )
+      end.to raise_error(ArgumentError, /weight component/)
+    end
+
+    it 'observes dormant configured weights once, clears on appearance, and logs on re-disappearance' do
+      seed_anthropic_settings(
+        models:    { ghost: { weight: 130 } },
+        instances: {
+          primary: {
+            enabled: true, endpoint: 'https://api.anthropic.com', api_key: 'sk-ant-dormant', tier: :frontier
+          }
+        }
+      )
+      actor = described_class.new
+      logger = spy('anthropic weight logger')
+      allow(actor).to receive(:log).and_return(logger)
+      actor.manual
+      actor.manual
+      actor.manual
+
+      stub_probe_http(models: [{ id: 'ghost' }])
+      actor.manual
+      stub_probe_http(models: [{ id: 'claude-sonnet-4-6' }])
+      actor.manual
+
+      expected = '[llm][anthropic] action=dormant_weight ' \
+                 'weight_key=[:anthropic, :model, "ghost"] no_lane_published=true'
+      expect(logger).to have_received(:info).with(expected).twice
+      actor.shutdown
+    end
+
+    it 'never invokes Settings lifecycle APIs during cadence or shutdown' do
+      seed_instance(:primary, api_key: 'sk-ant-no-settings-lifecycle')
+      actor = described_class.new
+      expect(Legion::Settings).not_to receive(:on_reload)
+      expect(Legion::Settings).not_to receive(:reload!)
+      expect(Legion::Settings).not_to receive(:reset!)
+
+      actor.manual
+      actor.manual
+      actor.shutdown
+    end
+
+    it 'leaves cached state unchanged on replacement failure and retries on the next pass' do
+      seed_instance(:primary, api_key: 'sk-ant-replace-retry')
+      actor = described_class.new
+      actor.manual
+      state = tracked_state(actor)
+      original_offerings = state[:offerings]
+      original_signature = state[:signature]
+      settings_root[:llm][:anthropic][:weight] = 175
+      writer = actor.send(:publisher)
+      allow(writer).to receive(:replace_instance_snapshot).and_raise('replace failed')
+
+      expect do
+        actor.send(:replace_changed_offerings, instance_id: 'primary', state: state)
+      end.to raise_error(RuntimeError, 'replace failed')
+      expect(state.values_at(:sequence, :offerings, :signature)).to eq([0, original_offerings, original_signature])
+
+      allow(writer).to receive(:replace_instance_snapshot).and_call_original
+      actor.send(:replace_changed_offerings, instance_id: 'primary', state: state)
+      expect(state[:sequence]).to eq(1)
+      expect(state[:offerings].first.weight_inputs[:provider]).to eq(175)
+    end
+
+    it 'serializes interleaved ordinary passes and leaves cache equal to the final publication' do
+      seed_instance(:primary, api_key: 'sk-ant-interleaved')
+      actor = described_class.new
+      actor.manual
+      state = tracked_state(actor)
+      writer = actor.send(:publisher)
+      entered = Queue.new
+      release = Queue.new
+      sequences = Queue.new
+      allow(writer).to receive(:replace_instance_snapshot).and_wrap_original do |original, **kwargs|
+        sequences << kwargs[:sequence]
+        if kwargs[:sequence] == 1
+          entered << true
+          release.pop
+        end
+        original.call(**kwargs)
+      end
+
+      settings_root[:llm][:anthropic][:weight] = 110
+      first = Thread.new { actor.send(:replace_changed_offerings, instance_id: 'primary', state: state) }
+      entered.pop
+      settings_root[:llm][:anthropic][:weight] = 120
+      second = Thread.new { actor.send(:replace_changed_offerings, instance_id: 'primary', state: state) }
+      release << true
+      [first, second].each(&:join)
+
+      published_sequences = Array.new(2) { sequences.pop }
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-interleaved')
+      published = registry.snapshot.offerings_for(instance_key: key)
+      expect(published_sequences).to eq([1, 2])
+      expect(state[:sequence]).to eq(2)
+      expect(state[:offerings].map(&:base_weight)).to eq(published.map(&:base_weight))
+      expect(state[:offerings].first.weight_inputs[:provider]).to eq(120)
+    end
+
+    it 'rebuilds from current Settings after discovery and before initial activation' do
+      seed_instance(:primary, api_key: 'sk-ant-initial-barrier')
+      actor = described_class.new
+      entered = Queue.new
+      release = Queue.new
+      allow(actor).to receive(:check_readiness) do
+        entered << true
+        release.pop
+        Legion::Extensions::Llm::Inventory::ReadinessResult.new(
+          ready: true, reason: 'barrier released', metadata: {}
+        )
+      end
+
+      activation = Thread.new { actor.manual }
+      entered.pop
+      settings_root[:llm][:anthropic][:weight] = 180
+      release << true
+      activation.value
+
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-initial-barrier')
+      offering = registry.snapshot.offerings_for(instance_key: key).first
+      state = tracked_state(actor)
+      expect(offering.weight_inputs[:provider]).to eq(180)
+      expect(state[:offerings].first.weight_inputs[:provider]).to eq(180)
+      expect(state[:published]).to be(true)
+    end
+
+    it 'updates an unpublished cache without replacing or counting it as a published dormant match' do
+      seed_instance(:primary, api_key: 'sk-ant-unpublished', weight: 115)
+      actor = described_class.new
+      unavailable = Legion::Extensions::Llm::Inventory::ReadinessResult.new(
+        ready: false, reason: 'not ready', metadata: {}
+      )
+      allow(actor).to receive(:check_readiness).and_return(unavailable)
+      actor.manual
+      state = tracked_state(actor)
+      writer = actor.send(:publisher)
+      allow(writer).to receive(:replace_instance_snapshot).and_call_original
+
+      settings_root[:llm][:anthropic][:instances][:primary][:weight] = 125
+      changed = actor.send(:replace_changed_offerings, instance_id: 'primary', state: state)
+
+      expect(changed).to be(true)
+      expect(writer).not_to have_received(:replace_instance_snapshot)
+      expect(state[:published]).to be(false)
+      expect(state[:offerings].first.weight_inputs[:instance]).to eq(125)
+
+      logger = spy('unpublished dormant logger')
+      allow(actor).to receive(:log).and_return(logger)
+      actor.send(:observe_dormant_weights)
+      expected = '[llm][anthropic] action=dormant_weight ' \
+                 'weight_key=[:anthropic, :instance, "primary"] no_lane_published=true'
+      expect(logger).to have_received(:info).with(expected)
+      actor.shutdown
+    end
+
+    it 'lets removal win a paused readiness race without resurrection or display writes' do
+      seed_instance(:primary, api_key: 'sk-ant-remove-race')
+      actor = described_class.new
+      entered = Queue.new
+      release = Queue.new
+      allow(actor).to receive(:check_readiness) do
+        entered << true
+        release.pop
+        Legion::Extensions::Llm::Inventory::ReadinessResult.new(
+          ready: true, reason: 'late readiness', metadata: {}
+        )
+      end
+
+      activation = Thread.new { actor.manual }
+      entered.pop
+      state = tracked_state(actor)
+      actor.send(:retire_instance, state)
+      release << true
+      activation.value
+
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-remove-race')
+      expect(registry.snapshot.publication_status(instance_key: key)).to be_nil
+      expect(actor.send(:with_instance_states) { |states| states }).to be_empty
+      expect(health_for(:primary)).to be_nil
+      expect(state[:published]).to be(false)
+    end
+
+    it 'keeps an activation failure unpublished and retries without mutating cached state' do
+      seed_instance(:primary, api_key: 'sk-ant-activation-retry')
+      actor = described_class.new
+      writer = actor.send(:publisher)
+      allow(writer).to receive(:activate_instance_snapshot).and_raise('activation failed')
+
+      actor.manual
+      state = tracked_state(actor)
+      original_offerings = state[:offerings]
+      original_signature = state[:signature]
+      expect(state.values_at(:sequence, :offerings, :signature, :published))
+        .to eq([0, original_offerings, original_signature, false])
+
+      allow(writer).to receive(:activate_instance_snapshot).and_call_original
+      actor.manual
+      expect(state[:published]).to be(true)
+      expect(state[:sequence]).to eq(0)
+      expect(state[:offerings]).not_to be_empty
     end
   end
 

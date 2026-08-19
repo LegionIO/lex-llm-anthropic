@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.5] - 2026-08-19
+
+### Changed
+- **Write-time SSOT lane weights** — Anthropic discovery now computes the validated four-axis weight pair for every offering and reconciles weight-only changes on the existing periodic discovery cadence. Initial and recovery activation rebuild from current settings, and publication, sequence, and cache mutation share the actor's existing serialization boundary.
+- **Dependency floor** — Requires `lex-llm >= 0.7.6` for the shared weight schema, immutable record pair, dormant-weight tracker, and atomic reconciler. The existing `legion-settings` floor and lifecycle remain unchanged.
+
+### Fixed
+- **Two-phase publication races** — Claimed instances are tracked as unpublished before readiness I/O; removal wins a late-readiness race, and publisher failures leave cached state retryable without sequence drift.
+- **Callable-path system conformance** — Added an end-to-end fixture proving a folded leading system message reaches Anthropic's rendered native `system` field.
+
 ## [0.3.4] - 2026-08-18
 
 ### Fixed

@@ -1023,6 +1023,30 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
       expect(outcome.reason).to be_a(String)
     end
 
+    it 'renders the folded leading system message in the native Anthropic system field' do
+      rendered_payload = nil
+      allow_any_instance_of(Legion::Extensions::Llm::Connection).to receive(:post) do |connection, _url, payload|
+        rendered_payload = payload
+        ssot_harness.record_dispatch(connection.provider)
+        env = Faraday::Env.new
+        env.status = 200
+        env.response = { headers: {} }
+        env.body = AnthropicSsotHarness::MESSAGES_RESPONSE_BODY.dup
+        Faraday::Response.new(env)
+      end
+
+      callable.chat(
+        messages: [
+          Legion::Extensions::Llm::Message.new(role: :system, content: 'authoritative system instruction'),
+          Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')
+        ],
+        model:    'claude-sonnet-4-6'
+      )
+
+      expect(rendered_payload[:system]).to eq([{ type: 'text', text: 'authoritative system instruction' }])
+      expect(rendered_payload[:messages]).to eq([{ role: 'user', content: [{ type: 'text', text: 'hello' }] }])
+    end
+
     it 'truncates reason to 512 bytes' do
       long_message = 'x' * 1000
       error = RuntimeError.new(long_message)
