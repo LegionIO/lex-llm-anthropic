@@ -1083,6 +1083,48 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
         expect(info.provider).to eq(:anthropic)
       end
     end
+
+    # Canonical dispatch boundary (N x N law): the 2026-08-19 incident was a
+    # plain-Hash message bypass that a lenient provider-side re-canonicalization
+    # masked for 25 failed openai dispatches. The provider render seam now
+    # rejects non-object message shapes loudly, so a Hash never reaches the
+    # Anthropic wire. Canonical::Message (pipeline dispatch) and provider-native
+    # lex-llm Message (Chat facade) both pass; anything else raises.
+    context 'canonical dispatch boundary (loud reject)' do
+      it 'rejects plain Hash messages on chat at the provider boundary' do
+        hash_messages = [{ role: 'user', content: 'What is the capital of France?' }]
+
+        expect { callable.chat(messages: hash_messages, model: 'claude-sonnet-4-6') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+      end
+
+      it 'rejects plain Hash messages on stream_chat at the provider boundary' do
+        hash_messages = [{ role: 'user', content: 'hello' }]
+
+        expect { callable.stream_chat(messages: hash_messages, model: 'claude-sonnet-4-6') }
+          .to raise_error(ArgumentError, /Canonical::Message/)
+      end
+
+      it 'renders Canonical::Message objects through the full dispatch path' do
+        rendered_payload = nil
+        allow_any_instance_of(Legion::Extensions::Llm::Connection).to receive(:post) do |_connection, _url, payload|
+          rendered_payload = payload
+          env = Faraday::Env.new
+          env.status = 200
+          env.response = { headers: {} }
+          env.body = AnthropicSsotHarness::MESSAGES_RESPONSE_BODY.dup
+          Faraday::Response.new(env)
+        end
+
+        result = callable.chat(
+          messages: [Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello')],
+          model:    'claude-sonnet-4-6'
+        )
+
+        expect(result).to be_a(Legion::Extensions::Llm::Message)
+        expect(rendered_payload[:messages]).to eq([{ role: 'user', content: [{ type: 'text', text: 'hello' }] }])
+      end
+    end
   end
 
   # ─── OfferingDraft validation ────────────────────────────────────────────────

@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.6] - 2026-08-19
+
+### Changed
+- **Canonical dispatch boundary enforced** — The provider render seam now rejects non-canonical message shapes loudly. `Anthropic::Provider#render_payload` validates every message through `#build_canonical_messages` before rendering: pipeline-dispatch `Canonical::Message` objects and provider-native `lex-llm` Message objects (Chat facade) both pass through unchanged, and any other shape raises `ArgumentError`. The plain-Hash bypass that the 2026-08-19 incident masked via lenient provider-side re-canonicalization is removed; a Hash can no longer reach the Anthropic wire. The provider wire payload shape and client message formats are unchanged.
+- **lex-llm floor raised to 0.7.7** — Requires the canonical dispatch-boundary contract (`Canonical::Message` as the pipeline message shape). A local-tree `lex-llm` path dependency is added to the test group so the adjacent checkout resolves against 0.7.7 during development.
+
+### Added
+- **Boundary regression coverage** — The dispatch-boundary conformance block and the provider contract spec now cover the loud reject: plain-Hash input raises `ArgumentError` on both `chat` and `stream_chat` through the full callable path, while `Canonical::Message` and legacy `Message` inputs render unchanged.
+
 ## [0.3.5] - 2026-08-19
 
 ### Changed

@@ -82,6 +82,38 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Provider do
     end
   end
 
+  describe '#build_canonical_messages' do
+    let(:provider) do
+      described_class.new({
+                            anthropic_api_key:         'test-key',
+                            request_timeout:           30,
+                            max_retries:               0,
+                            retry_interval:            0,
+                            retry_backoff_factor:      0,
+                            retry_interval_randomness: 0
+                          })
+    end
+
+    it 'passes through Canonical::Message objects (pipeline dispatch)' do
+      msg = Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello')
+
+      expect(provider.send(:build_canonical_messages, [msg])).to eq([msg])
+    end
+
+    it 'passes through provider-native lex-llm Message objects (Chat facade)' do
+      msg = Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')
+
+      expect(provider.send(:build_canonical_messages, [msg])).to eq([msg])
+    end
+
+    it 'rejects plain Hash messages with a loud ArgumentError (the 2026-08-19 bypass class)' do
+      hash_messages = [{ role: 'user', content: 'hello' }]
+
+      expect { provider.send(:build_canonical_messages, hash_messages) }
+        .to raise_error(ArgumentError, /Canonical::Message/)
+    end
+  end
+
   describe '#build_chunk bridge' do
     let(:provider) do
       described_class.new({

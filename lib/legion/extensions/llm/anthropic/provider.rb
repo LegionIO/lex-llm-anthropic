@@ -98,6 +98,12 @@ module Legion
           private
 
           def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:)
+            # Canonical boundary (N x N law): the render seam is the last line
+            # before the Anthropic wire. Pipeline dispatch delivers
+            # Canonical::Message objects; the provider-native Chat facade
+            # delivers lex-llm Message. Plain Hashes are the bypass class (the
+            # 2026-08-19 incident) — reject loudly, never silently re-canonicalize.
+            messages = build_canonical_messages(messages)
             log_render_payload(messages:, tools:, model:, stream:, schema:)
             system_messages, chat_messages = messages.partition { |message| message.role == :system }
 
@@ -117,6 +123,24 @@ module Legion
               tool_choice:   tool_choice(tool_prefs),
               output_config: output_config(schema)
             }.compact
+          end
+
+          # Canonical boundary (N x N law): the render seam accepts only the two
+          # object shapes this spoke renders — Canonical::Message (pipeline
+          # dispatch) and provider-native lex-llm Message (Chat facade). Both are
+          # passed through unchanged (the render path handles both via accessors).
+          # Plain Hashes are the bypass class (the 2026-08-19 incident) — reject
+          # loudly with an ArgumentError, never silently re-canonicalize.
+          def build_canonical_messages(messages)
+            Array(messages).each do |msg|
+              next if msg.is_a?(Legion::Extensions::Llm::Canonical::Message)
+              next if msg.is_a?(Legion::Extensions::Llm::Message)
+
+              raise ArgumentError,
+                    "anthropic provider input must be Canonical::Message objects, got #{msg.class} — " \
+                    'non-canonical message shapes must not cross the dispatch boundary'
+            end
+            messages
           end
 
           # The Messages API requires max_tokens on every request. /v1/models

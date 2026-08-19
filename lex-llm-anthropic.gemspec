@@ -27,5 +27,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'legion-logging', '>= 1.3.2'
   spec.add_dependency 'legion-settings', '>= 1.4.2'
   spec.add_dependency 'legion-transport', '>= 1.4.14'
-  spec.add_dependency 'lex-llm', '>= 0.7.6'
+  # 0.7.7 carries the canonical dispatch-boundary contract: Canonical::Message is
+  # the pipeline message shape, and this provider rejects non-canonical input loudly.
+  spec.add_dependency 'lex-llm', '>= 0.7.7'
 end
