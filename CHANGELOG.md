@@ -7,8 +7,8 @@
 - **Dependency floor** — Requires `lex-llm >= 0.7.6` for the shared weight schema, immutable record pair, dormant-weight tracker, and atomic reconciler. The existing `legion-settings` floor and lifecycle remain unchanged.
 
 ### Fixed
-- **Two-phase publication races** — Claimed instances are tracked as unpublished before readiness I/O; removal wins a late-readiness race, and publisher failures leave cached state retryable without sequence drift.
-- **Callable-path system conformance** — Added an end-to-end fixture proving a folded leading system message reaches Anthropic's rendered native `system` field.
+- **Two-phase publication races** — Offering and weight validation now completes before allocating a callable, probe coordinator, publisher token, registry scope, or local state; malformed weight configuration cannot strand an untracked claim or activate a healthy zero-lane instance. Claimed instances are tracked as unpublished before readiness I/O; removal wins a late-readiness race, and publisher failures leave cached state retryable without sequence drift.
+- **Callable-path system conformance** — The provider formatter now accepts folded canonical messages as well as the legacy message shape. An end-to-end canonical fixture proves a folded leading system message reaches Anthropic's rendered native `system` field.
 
 ## [0.3.4] - 2026-08-18
 

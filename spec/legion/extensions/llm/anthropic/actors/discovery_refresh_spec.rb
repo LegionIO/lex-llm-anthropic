@@ -363,6 +363,32 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::DiscoveryRefresh do
       end.to raise_error(ArgumentError, /weight component/)
     end
 
+    it 'leaves no claim for malformed startup weight and claims once after correction' do
+      seed_instance(:primary, api_key: 'sk-ant-malformed-startup', weight: false)
+      actor = described_class.new
+      writer = actor.send(:publisher)
+      allow(writer).to receive(:claim_instance).and_call_original
+      key = instance_key_for(name: :primary, api_key: 'sk-ant-malformed-startup')
+
+      actor.manual
+
+      expect(registry.snapshot.publication_status(instance_key: key)).to be_nil
+      expect(registry.snapshot.each_instance.to_a).to be_empty
+      expect(registry.snapshot.each_publication_status.to_a).to be_empty
+      expect(actor.send(:with_instance_states) { |states| states }).to be_empty
+      expect(writer).not_to have_received(:claim_instance)
+
+      settings_root[:llm][:anthropic][:instances][:primary][:weight] = 115
+      actor.manual
+      actor.manual
+
+      expect(writer).to have_received(:claim_instance).once
+      expect(registry.snapshot.each_instance.to_a.size).to eq(1)
+      expect(registry.snapshot.publication_status(instance_key: key).state).to eq(:complete)
+      expect(registry.snapshot.offerings_for(instance_key: key)).not_to be_empty
+      expect(tracked_state(actor)[:published]).to be(true)
+    end
+
     it 'observes dormant configured weights once, clears on appearance, and logs on re-disappearance' do
       seed_anthropic_settings(
         models:    { ghost: { weight: 130 } },

@@ -1037,8 +1037,10 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
       callable.chat(
         messages: [
-          Legion::Extensions::Llm::Message.new(role: :system, content: 'authoritative system instruction'),
-          Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')
+          Legion::Extensions::Llm::Canonical::Message.build(
+            role: :system, content: 'authoritative system instruction'
+          ),
+          Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello')
         ],
         model:    'claude-sonnet-4-6'
       )

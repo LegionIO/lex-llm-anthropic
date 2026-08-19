@@ -144,6 +144,10 @@ module Legion
                 provider_family: :anthropic, instance_id: instance_id, physical_id: physical_id
               )
 
+              # Validate the complete offering set before allocating any
+              # callable, probe coordinator, publisher token, or local state.
+              offerings = discover_offerings_for_instance(instance_cfg:, instance_key:)
+
               callable = AnthropicCallable.new(instance_cfg: instance_cfg, logger: log)
               probe_coordinator = Legion::Extensions::Llm::Inventory::ProbeCoordinator.new(
                 instance_key: instance_key,
@@ -156,8 +160,6 @@ module Legion
                 probe_request_handle: probe_coordinator,
                 physical_id:          physical_id
               )
-
-              offerings = discover_offerings_for_instance(instance_cfg:, instance_key:)
 
               state = {
                 name:              name,
@@ -495,7 +497,7 @@ module Legion
                   instance_key: instance_key
                 )
               end
-            rescue StandardError => e
+            rescue Faraday::Error, Legion::JSON::ParseError => e
               handle_exception(e, level: :warn, operation: 'anthropic.actor.discover_offerings')
               []
             end
