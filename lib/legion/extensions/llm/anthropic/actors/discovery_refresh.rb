@@ -7,12 +7,12 @@ require 'faraday'
 
 require 'legion/logging/helper'
 require 'legion/extensions/llm/anthropic/provider'
+require 'legion/extensions/llm/canonical'
 require 'legion/extensions/llm/inventory/publisher'
 require 'legion/extensions/llm/inventory/identity'
 require 'legion/extensions/llm/inventory/records'
 require 'legion/extensions/llm/inventory/evidence'
 require 'legion/extensions/llm/inventory/probe_coordinator'
-require 'legion/extensions/llm/inventory/scoped_refresher'
 require 'legion/extensions/llm/inventory/weight_reconciler'
 require 'legion/extensions/llm/routing/provider_outcome'
 require 'legion/extensions/llm/taxonomies'
@@ -94,16 +94,9 @@ module Legion
 
             # ── Publisher ──────────────────────────────────────────────────────
 
-            # The compatibility adapter projects committed snapshots into the old
-            # coordinator inventory store for the mixed-version window; it
-            # degrades to :not_loaded when that coordinator is not loaded.
             def publisher
               @publisher ||= Legion::Extensions::Llm::Inventory::Publisher.new(
-                provider_family:       :anthropic,
-                compatibility_adapter:
-                                       Legion::Extensions::Llm::Inventory::ScopedRefresher::LegacyCoordinatorAdapter.new(
-                                         provider_family: :anthropic
-                                       )
+                provider_family: :anthropic
               )
             end
 
@@ -899,10 +892,11 @@ module Legion
           # at the transport layer map to :connection_failure (which the actor's
           # harness may escalate to :instance_unavailable).
           class AnthropicCallable
-            # Provider dispatch kwargs the base Provider accepts by name. Any
-            # other fleet param is merged into the provider `params:` passthrough,
-            # which the base Provider deep-merges into the rendered payload.
-            CHAT_PROVIDER_KEYS = %i[tools temperature params headers schema thinking tool_prefs].freeze
+            # Provider dispatch kwargs the 0.8.0 base funnel accepts by name.
+            # temperature is not one of them (05 O4) — it lives only in
+            # Canonical::Params. Any other fleet param is merged into the
+            # provider `params:` passthrough as canonical Params.
+            CHAT_PROVIDER_KEYS = %i[tools params headers schema thinking tool_prefs].freeze
             EMBED_PROVIDER_KEYS = %i[dimensions params headers].freeze
 
             def initialize(instance_cfg:, logger:)
@@ -923,19 +917,19 @@ module Legion
               @disconnected
             end
 
-            def chat(messages:, model:, **rest)
+            def chat(messages, model:, **rest)
               # Canonical boundary (N x N law): fleet dispatch delivers
               # Canonical::Message objects only. Native/Hash shapes are the
               # bypass class (the 2026-08-19 incident) — reject loudly, never coerce.
               provider.enforce_canonical_messages!(messages)
-              provider.chat(messages: messages, model: normalize_model(model),
-                                            **dispatch_kwargs(rest, known: CHAT_PROVIDER_KEYS))
+              provider.chat(messages, model: normalize_model(model),
+                                      **dispatch_kwargs(rest, known: CHAT_PROVIDER_KEYS))
             end
 
-            def stream_chat(messages:, model:, **rest, &)
+            def stream_chat(messages, model:, **rest, &)
               provider.enforce_canonical_messages!(messages)
-              provider.stream_chat(messages: messages, model: normalize_model(model),
-                                              **dispatch_kwargs(rest, known: CHAT_PROVIDER_KEYS), &)
+              provider.stream_chat(messages, model: normalize_model(model),
+                                             **dispatch_kwargs(rest, known: CHAT_PROVIDER_KEYS), &)
             end
 
             def embed(text:, model:, **rest)
@@ -994,14 +988,36 @@ module Legion
               Legion::Extensions::Llm::Model::Info.new(id: model.to_s, provider: :anthropic)
             end
 
+            # The fleet wire delivers params and thinking as plain Hashes;
+            # in-process dispatch delivers Canonical::Params /
+            # Canonical::Thinking::Config. Both entry forms converge to
+            # canonical here, at the callable boundary — the render path sees
+            # canonical only (R1).
             def dispatch_kwargs(rest, known:)
               known_part = rest.slice(*known)
               extra = rest.except(*known)
-              return known_part if extra.empty?
+              known_part[:params] = canonical_params(known_part[:params], extra)
+              known_part[:thinking] = canonical_thinking(known_part[:thinking])
+              known_part
+            end
 
-              base_params = known_part[:params]
-              merged = base_params.is_a?(Hash) ? base_params.merge(extra) : extra
-              known_part.merge(params: merged)
+            def canonical_params(params, extra)
+              base = case params
+                     when Legion::Extensions::Llm::Canonical::Params then params.to_h
+                     when Hash then params.transform_keys(&:to_sym)
+                     else {}
+                     end
+              base = base.merge(extra.transform_keys(&:to_sym)) unless extra.empty?
+              return nil if base.empty?
+
+              Legion::Extensions::Llm::Canonical::Params.from_hash(base)
+            end
+
+            def canonical_thinking(thinking)
+              return thinking if thinking.nil? ||
+                                 thinking.is_a?(Legion::Extensions::Llm::Canonical::Thinking::Config)
+
+              Legion::Extensions::Llm::Canonical::Thinking::Config.from_hash(thinking.transform_keys(&:to_sym))
             end
 
             def classify_client_error(error:)
