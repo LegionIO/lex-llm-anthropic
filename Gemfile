@@ -5,7 +5,7 @@ source 'https://rubygems.org'
 gemspec
 
 # Local-tree resolution: use the adjacent lex-llm checkout when present so the
-# canonical-boundary work resolves against the unreleased 0.7.7.
+# 0.8.0 conformance work resolves against the local contract cut.
 group :test do
   lex_llm_path = File.expand_path('../lex-llm', __dir__)
   gem 'lex-llm', path: lex_llm_path if Dir.exist?(lex_llm_path)
