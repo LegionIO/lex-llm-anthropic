@@ -988,16 +988,15 @@ module Legion
               Legion::Extensions::Llm::Model::Info.new(id: model.to_s, provider: :anthropic)
             end
 
-            # The fleet wire delivers params and thinking as plain Hashes;
-            # in-process dispatch delivers Canonical::Params /
-            # Canonical::Thinking::Config. Both entry forms converge to
-            # canonical here, at the callable boundary — the render path sees
-            # canonical only (R1).
+            # The 0.8.0 completion funnel receives canonical values only
+            # (08 F3): the folded wire params become a Canonical::Params at
+            # the dispatch boundary — temperature is a params member (05 O4),
+            # never a kwarg. In-process dispatch already passes canonical
+            # values; they converge here.
             def dispatch_kwargs(rest, known:)
               known_part = rest.slice(*known)
               extra = rest.except(*known)
               known_part[:params] = canonical_params(known_part[:params], extra)
-              known_part[:thinking] = canonical_thinking(known_part[:thinking])
               known_part
             end
 
@@ -1011,13 +1010,6 @@ module Legion
               return nil if base.empty?
 
               Legion::Extensions::Llm::Canonical::Params.from_hash(base)
-            end
-
-            def canonical_thinking(thinking)
-              return thinking if thinking.nil? ||
-                                 thinking.is_a?(Legion::Extensions::Llm::Canonical::Thinking::Config)
-
-              Legion::Extensions::Llm::Canonical::Thinking::Config.from_hash(thinking.transform_keys(&:to_sym))
             end
 
             def classify_client_error(error:)
