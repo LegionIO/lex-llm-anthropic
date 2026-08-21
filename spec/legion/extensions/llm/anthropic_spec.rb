@@ -194,7 +194,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   end
 
   def capture_registry_events(models, readiness:)
-    publisher = Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :anthropic)
+    publisher = Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :anthropic, provider_instance: 'local')
     events = []
     allow(publisher).to receive(:publishing_available?).and_return(true)
     allow(publisher).to receive(:publish_event) { |event| events << event }
