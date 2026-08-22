@@ -56,13 +56,6 @@ module Legion
             raise NotImplementedError, 'Anthropic does not expose embeddings through this provider'
           end
 
-          def list_models(**)
-            log.debug { 'listing available Anthropic models' }
-            super.tap do |models|
-              log.debug { "discovered #{Array(models).size} Anthropic model(s)" }
-            end
-          end
-
           CONTEXT_WINDOWS = {
             'claude-opus-4'   => 200_000,
             'claude-sonnet-4' => 200_000,
@@ -72,8 +65,6 @@ module Legion
             'claude-3-sonnet' => 200_000,
             'claude-3-haiku'  => 200_000
           }.freeze
-
-          COMPLETION_BASE = [:completion].freeze
 
           private
 
@@ -91,10 +82,10 @@ module Legion
             cacheable_count = caching ? [chat_messages.size - exclude_count, 0].max : 0
 
             {
-              model:         model.id,
+              model:         model.to_s,
               messages:      format_messages(chat_messages, cacheable_count:),
               stream:        stream,
-              max_tokens:    model.max_tokens || default_max_tokens,
+              max_tokens:    default_max_tokens,
               system:        system_content(system_messages, cache: caching),
               thinking:      thinking_payload(thinking),
               temperature:   params&.temperature,
@@ -114,7 +105,7 @@ module Legion
 
           def log_render_payload(messages:, tools:, model:, stream:, schema:)
             log.debug do
-              "rendering Anthropic #{stream ? 'stream' : 'chat'} payload for #{model.id} " \
+              "rendering Anthropic #{stream ? 'stream' : 'chat'} payload for #{model} " \
                 "with #{messages.size} message(s), #{tools.size} tool(s), schema=#{!schema.nil?}"
             end
           end
@@ -331,58 +322,6 @@ module Legion
           # with exactly one done (or error) chunk.
           def build_chunk(data)
             translator.parse_chunk(data)
-          end
-
-          def parse_list_models_response(response, provider, _capabilities)
-            Array(response.body['data']).map do |model|
-              model_id = model.fetch('id')
-              detail = model_detail(model_id)
-              ctx = detail&.dig(:context_window) || infer_context_window(model_id)
-              resolved = resolve_model_capabilities(model_id)
-              Legion::Extensions::Llm::Model::Info.new(
-                id:             model_id,
-                name:           model['display_name'] || model_id,
-                provider:       provider,
-                capabilities:   COMPLETION_BASE + resolved[:capabilities],
-                context_length: ctx,
-                metadata:       model.merge('created_at' => model['created_at']).compact
-              )
-            end
-          end
-
-          def resolve_model_capabilities(model_id)
-            Legion::Extensions::Llm::CapabilityPolicy.resolve(
-              real:              {},
-              provider_catalog:  catalog_capabilities(model_id),
-              probe:             {},
-              provider_envelope: { streaming: true, tools: true },
-              provider_config:   provider_capability_config,
-              instance_config:   instance_capability_config,
-              model_config:      model_capability_config(model_id)
-            )
-          end
-
-          # Boolean capability hash for a model, read from the shared lex-llm
-          # catalog (models.dev-sourced). This is where Claude extended-thinking
-          # support (`reasoning` -> `:thinking`) is surfaced during discovery, so
-          # thinking-capable Claude models advertise `:thinking` and the router's
-          # thinking filter can route them. Unknown models return `{}`, falling
-          # back to the provider envelope. The catalog is the single source of
-          # truth for per-model capabilities across every provider.
-          def catalog_capabilities(model_id)
-            model = Legion::Extensions::Llm::Models.find(model_id, :anthropic)
-            Array(model&.capabilities).each_with_object({}) do |capability, result|
-              canonical = Legion::Extensions::Llm::Capabilities.canonical(capability)
-              next unless Legion::Extensions::Llm::CapabilityPolicy::OPTIONAL_CAPABILITIES.include?(canonical)
-
-              result[canonical] = true
-            end
-          rescue Legion::Extensions::Llm::ModelNotFoundError
-            {}
-          rescue StandardError => e
-            handle_exception(e, level: :warn, handled: true,
-                                operation: "#{slug}.catalog_capabilities", model: model_id)
-            {}
           end
 
           def infer_context_window(model_id)

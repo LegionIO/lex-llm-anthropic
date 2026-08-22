@@ -5,7 +5,8 @@ require 'legion/logging/helper'
 require 'legion/extensions/llm/anthropic/provider'
 require 'legion/extensions/llm/anthropic/translator'
 require 'legion/extensions/llm/anthropic/version'
-require 'legion/extensions/llm/anthropic/actors/discovery_refresh'
+require 'legion/extensions/llm/anthropic/helpers/callable'
+require 'legion/extensions/llm/anthropic/actors/discovery'
 
 module Legion
   module Extensions
@@ -92,6 +93,10 @@ module Legion
 
               normalized = normalize_instance_config(config)
               next unless normalized[:anthropic_api_key]
+              # enabled: false is an operator shutdown — the shared pipeline
+              # claims whatever this catalog returns, so the filter lives here
+              # (single source for both the dispatch and discovery paths).
+              next if normalized[:enabled] == false
 
               normalized[:api_key] = normalized[:anthropic_api_key]
               normalized[:source] =

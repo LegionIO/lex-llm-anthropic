@@ -153,7 +153,7 @@ class AnthropicSsotHarness
   # base Connection#post is stubbed by the spec and counted per provider
   # object via record_dispatch.
   def build_callable(instance_config:)
-    Legion::Extensions::Llm::Anthropic::Actor::AnthropicCallable.new(
+    Legion::Extensions::Llm::Anthropic::Helpers::Callable.new(
       instance_cfg: instance_config,
       logger:       Logger.new(File::NULL)
     )
@@ -391,22 +391,19 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     it 'reproduces IDs after restart (identity is deterministic from inputs)' do
       config = ssot_harness.instance_configs[0]
       first_run = bring_up_instance(config)
-      first_offering_id = registry.snapshot.offerings_for(instance_key: first_run[:key]).first.offering_id
       first_lane_id = registry.snapshot.lanes_for(instance_key: first_run[:key]).first.lane_id
 
       registry.reset!
       second_run = bring_up_instance(config)
-      second_offering_id = registry.snapshot.offerings_for(instance_key: second_run[:key]).first.offering_id
       second_lane_id = registry.snapshot.lanes_for(instance_key: second_run[:key]).first.lane_id
 
-      expect(second_offering_id).to eq(first_offering_id)
       expect(second_lane_id).to eq(first_lane_id)
     end
   end
 
-  # ─── Tier change does NOT change lane/offering identity ─────────────────────
+  # ─── Tier change mints a NEW lane (5-tuple identity law) ────────────────────
 
-  describe 'tier change and identity preservation' do
+  describe 'tier change and lane identity' do
     def bring_up_with_tier(config, tier:)
       publisher = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :anthropic)
       key = anthropic_key_for(config)
@@ -430,11 +427,10 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
       { publisher: publisher, key: key, callable: callable, token: token, drafts: drafts }
     end
 
-    it 'preserves offering_id and lane_id when tier changes from frontier to local' do
+    it 'mints a new lane id when tier changes from frontier to local' do
       config = ssot_harness.instance_configs[0]
       context = bring_up_with_tier(config, tier: :frontier)
 
-      before_offering = registry.snapshot.offerings_for(instance_key: context[:key]).first
       before_lane = registry.snapshot.lanes_for(instance_key: context[:key]).first
 
       local_drafts = ssot_harness.build_offering_drafts(
@@ -448,12 +444,15 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
         physical_id:     context[:key].physical_id
       )
 
-      after_offering = registry.snapshot.offerings_for(instance_key: context[:key]).first
-      after_lane = registry.snapshot.lanes_for(instance_key: context[:key]).first
+      after_lanes = registry.snapshot.lanes_for(instance_key: context[:key])
+      after_lane = after_lanes.first
 
-      expect(after_offering.offering_id).to eq(before_offering.offering_id)
-      expect(after_lane.lane_id).to eq(before_lane.lane_id)
-      expect(after_offering.tier).to eq(:local)
+      # The 5-tuple identity law (R6): tier is the FIRST field of
+      # compose_lane_id, so a tier change mints a new lane — the old
+      # frontier lane is gone and the instance holds only the :local tier.
+      expect(after_lane.lane_id).not_to eq(before_lane.lane_id)
+      expect(after_lane.tier).to eq(:local)
+      expect(after_lanes.map(&:tier).uniq).to eq([:local])
     end
   end
 
@@ -649,7 +648,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
     it '§8 health firewall: connection failure stays :connection_failure, never :instance_unavailable' do
       # §8: connection refusal/reset never mutates global availability.
-      # The production AnthropicCallable correctly returns :connection_failure;
+      # The production Helpers::Callable correctly returns :connection_failure;
       # the harness must NOT escalate it to :instance_unavailable.
       conn_error = Faraday::ConnectionFailed.new('Connection refused - connect(2) for api.anthropic.com:443')
       outcome = ssot_harness.normalize_dispatch_error(error: conn_error)
@@ -826,8 +825,8 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
       publisher = Legion::Extensions::Llm::Inventory::Publisher.new(provider_family: :anthropic)
       callable = ssot_harness.build_callable(instance_config: config)
       token = claim_and_activate(publisher: publisher, callable: callable)
-      offering = registry.snapshot.offerings_for(instance_key: key).first
-      { publisher: publisher, token: token, offering: offering, callable: callable }
+      lane = registry.snapshot.lanes_for(instance_key: key).first
+      { publisher: publisher, token: token, lane: lane, callable: callable }
     end
 
     def claim_and_activate(publisher:, callable:)
@@ -854,9 +853,13 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     it 'rejects a mismatched offering_id' do
       activate_offering
 
+      # The 0.8.0 envelope key is still named `offering_id`, but its value MUST
+      # be a lane's 5-tuple id (worker_execution.rb:86) — so the mismatched id
+      # is a well-formed 5-tuple of a different lane, not the deleted off:v1:
+      # shape (which would fail lane-id validation, not the mismatch check).
       envelope = {
         execution_contract: Legion::Extensions::Llm::Fleet::Protocol::EXACT_EXECUTION_CONTRACT,
-        offering_id:        'off:v1:0000000000000000000000000000000000000000000000000000000000000000',
+        offering_id:        'frontier:anthropic:other-instance:inference:claude-sonnet-4-6',
         provider:           'anthropic',
         provider_instance:  instance_id,
         model:              'claude-sonnet-4-6',
@@ -874,10 +877,10 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
       envelope = {
         execution_contract: Legion::Extensions::Llm::Fleet::Protocol::EXACT_EXECUTION_CONTRACT,
-        offering_id:        ctx[:offering].offering_id,
+        offering_id:        ctx[:lane].lane_id,
         provider:           'anthropic',
         provider_instance:  instance_id,
-        model:              ctx[:offering].model,
+        model:              ctx[:lane].model,
         operation:          'embed',
         params:             { text: 'hello' }
       }
@@ -892,7 +895,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
       envelope = {
         execution_contract: Legion::Extensions::Llm::Fleet::Protocol::EXACT_EXECUTION_CONTRACT,
-        offering_id:        ctx[:offering].offering_id,
+        offering_id:        ctx[:lane].lane_id,
         provider:           'anthropic',
         provider_instance:  instance_id,
         model:              'some-other-model/v1',
@@ -916,10 +919,10 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
 
       envelope = {
         execution_contract: Legion::Extensions::Llm::Fleet::Protocol::EXACT_EXECUTION_CONTRACT,
-        offering_id:        ctx[:offering].offering_id,
+        offering_id:        ctx[:lane].lane_id,
         provider:           'anthropic',
         provider_instance:  instance_id,
-        model:              ctx[:offering].model,
+        model:              ctx[:lane].model,
         operation:          'chat',
         params:             { messages: [] }
       }
@@ -933,15 +936,18 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   # ─── No Legion::LLM reverse dependency ─────────────────────────────────────
 
   describe 'dependency isolation' do
-    it 'does not require Legion::LLM in the discovery actor' do
+    it 'does not require Legion::LLM in the discovery actor or runner' do
       project_root = File.expand_path('../../../..', __dir__)
-      actor_file = File.read(
-        File.join(project_root, 'lib/legion/extensions/llm/anthropic/actors/discovery_refresh.rb')
-      )
-      expect(actor_file).not_to match(/\bLegion::LLM\b/)
+      %w[
+        lib/legion/extensions/llm/anthropic/actors/discovery.rb
+        lib/legion/extensions/llm/anthropic/runners/discovery.rb
+      ].each do |relative|
+        file = File.read(File.join(project_root, relative))
+        expect(file).not_to match(/\bLegion::LLM\b/), "#{relative} references Legion::LLM"
+      end
     end
 
-    it 'AnthropicCallable does not reference Legion::LLM' do
+    it 'the Callable does not reference Legion::LLM' do
       callable = ssot_harness.build_callable(instance_config: ssot_harness.instance_configs[0])
       outcome = callable.normalize_dispatch_error(error: RuntimeError.new('test'))
       expect(outcome).to be_a(Legion::Extensions::Llm::Routing::ProviderOutcome)
@@ -994,9 +1000,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     end
   end
 
-  # ─── AnthropicCallable direct contract ─────────────────────────────────────
+  # ─── Callable direct contract ──────────────────────────────────────────────
 
-  describe Legion::Extensions::Llm::Anthropic::Actor::AnthropicCallable do
+  describe Legion::Extensions::Llm::Anthropic::Helpers::Callable do
     let(:callable) do
       described_class.new(
         instance_cfg: ssot_harness.instance_configs[0],
@@ -1063,12 +1069,24 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     end
 
     # D15: both the fleet WorkerExecution and legion-llm SelectionDispatch pass
-    # the offering model as a RAW STRING, but render_payload calls model.id /
-    # model.max_tokens (Model::Info). The callable must wrap at the boundary —
-    # the render path is exercised here for real (only Connection#post is
-    # stubbed), so a missing wrap fails with NoMethodError, not a green stub.
+    # the offering model as a RAW STRING. The 0.8.0 funnel takes the plain
+    # model string (R1) — the callable passes it through and the provider
+    # renders it directly. The render path is exercised here for real (only
+    # Connection#post is stubbed), so a divergent boundary fails with
+    # NoMethodError, not a green stub.
     context 'raw-string model dispatch (D15)' do
-      it 'wraps a raw string into a Model::Info and renders without NoMethodError' do
+      it 'passes the raw string through and renders it in the wire payload' do
+        rendered_payload = nil
+        allow_any_instance_of(Legion::Extensions::Llm::Connection).to receive(:post) do |connection, _url, payload|
+          rendered_payload = payload
+          ssot_harness.record_dispatch(connection.provider)
+          env = Faraday::Env.new
+          env.status = 200
+          env.response = { headers: {} }
+          env.body = AnthropicSsotHarness::MESSAGES_RESPONSE_BODY.dup
+          Faraday::Response.new(env)
+        end
+
         # The callable is the fleet dispatch boundary — it receives the
         # Canonical::Message pipeline shape (B2: the sync parse result is a
         # Canonical::Response, asserted by type).
@@ -1078,18 +1096,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
         )
         expect(result).to be_a(Legion::Extensions::Llm::Canonical::Response)
         expect(ssot_harness.inference_call_count(callable: callable)).to eq(1)
-      end
-
-      it 'pass-throughs a model that already responds to :id' do
-        info = Legion::Extensions::Llm::Model::Info.new(id: 'claude-sonnet-4-6', provider: :anthropic)
-        expect(callable.send(:normalize_model, info)).to equal(info)
-      end
-
-      it 'wraps every dispatch op through the same boundary' do
-        info = callable.send(:normalize_model, 'claude-sonnet-4-6')
-        expect(info).to be_a(Legion::Extensions::Llm::Model::Info)
-        expect(info.id).to eq('claude-sonnet-4-6')
-        expect(info.provider).to eq(:anthropic)
+        expect(rendered_payload[:model]).to eq('claude-sonnet-4-6')
       end
     end
 

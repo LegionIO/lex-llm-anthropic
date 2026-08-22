@@ -1,68 +1,69 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
-require 'legion/extensions/llm/anthropic/provider'
+require 'legion/extensions/llm/anthropic/runners/discovery'
 
-# Regression: Claude 4+ models advertise the :thinking capability (extended
-# thinking) during discovery, sourced from the shared lex-llm model catalog.
-# Without it, legion-llm's router thinking filter cannot route thinking
-# requests. Non-thinking Claude models (3.x haiku) must NOT advertise it.
+# Regression: Claude models that support extended thinking advertise the
+# :thinking capability during discovery, sourced from the provider catalog
+# response (model_data[:type] == 'reasoning') or the model id — without it,
+# legion-llm's router thinking filter cannot route thinking requests.
+# Non-thinking Claude models must NOT advertise it.
+#
+# 0.8.0 semantic shift: a model no longer inherits :thinking from a shared
+# model catalog — it is :unknown unless the provider catalog response or the
+# model id evidences it.
 RSpec.describe 'Anthropic thinking capability discovery' do
-  let(:credential_sources) { Legion::Extensions::Llm::CredentialSources }
-  let(:provider) do
-    Legion::Extensions::Llm::Anthropic::Provider.new({
-                                                       anthropic_api_key:         'test-key',
-                                                       request_timeout:           30,
-                                                       max_retries:               0,
-                                                       retry_interval:            0,
-                                                       retry_backoff_factor:      0,
-                                                       retry_interval_randomness: 0
-                                                     })
-  end
+  let(:runner) { Legion::Extensions::Llm::Anthropic::Runners::Discovery }
 
-  def response_for(model_id, display_name)
-    body = { 'data' => [{ 'id' => model_id, 'display_name' => display_name, 'created_at' => '2025-05-14' }] }
-    double('response', body: body)
-  end
-
-  before do
-    allow(credential_sources).to receive(:setting).with(:extensions, :llm, :anthropic).and_return(nil)
+  # A real /v1/models catalog entry as the discovery pipeline receives it.
+  def catalog_entry(model_id, type: nil)
+    data = { id: model_id, display_name: model_id }
+    data[:type] = type if type
+    data
   end
 
   describe 'a thinking-capable Claude model (extended thinking)' do
-    it 'advertises :thinking for claude-sonnet-4 from the shared catalog' do
-      response = response_for('claude-sonnet-4-20250514', 'Claude Sonnet 4')
-      model = provider.send(:parse_list_models_response, response, :anthropic, nil).first
+    it 'advertises :thinking for a reasoning-type catalog entry' do
+      evidence = runner.send(
+        :build_capability_evidence,
+        model_id: 'claude-sonnet-4-20250514', model_data: catalog_entry('claude-sonnet-4-20250514', type: 'reasoning')
+      )
 
-      expect(model.capabilities).to include(:thinking, :streaming, :tools, :completion)
+      expect(evidence[:thinking].status).to eq(:supported)
+      expect(evidence.values_at(:streaming, :tools, :completion).map(&:status)).to all(eq(:supported))
     end
 
-    it 'reports :provider_catalog as the source for thinking' do
-      resolved = provider.send(:resolve_model_capabilities, 'claude-sonnet-4-20250514')
+    it 'reports :model_metadata as the source for thinking' do
+      evidence = runner.send(
+        :build_capability_evidence,
+        model_id: 'claude-sonnet-4-20250514', model_data: catalog_entry('claude-sonnet-4-20250514', type: 'reasoning')
+      )
 
-      thinking_source = resolved[:sources][:thinking]
-      expect(thinking_source[:value]).to be true
-      expect(thinking_source[:source]).to eq(:provider_catalog)
+      expect(evidence[:thinking].source).to eq(:model_metadata)
     end
   end
 
   describe 'a non-thinking Claude model' do
     it 'does NOT advertise :thinking for claude-3-haiku' do
-      response = response_for('claude-3-haiku-20240307', 'Claude 3 Haiku')
-      model = provider.send(:parse_list_models_response, response, :anthropic, nil).first
+      evidence = runner.send(
+        :build_capability_evidence,
+        model_id: 'claude-3-haiku-20240307', model_data: catalog_entry('claude-3-haiku-20240307')
+      )
 
-      expect(model.capabilities).to include(:completion, :streaming, :tools)
-      expect(model.capabilities).not_to include(:thinking)
+      expect(evidence.values_at(:completion, :streaming, :tools).map(&:status)).to all(eq(:supported))
+      expect(evidence[:thinking].status).not_to eq(:supported)
     end
   end
 
   describe 'an unknown model absent from the catalog' do
-    it 'falls back to the provider envelope without :thinking' do
-      response = response_for('claude-does-not-exist-99', 'Nonexistent')
-      model = provider.send(:parse_list_models_response, response, :anthropic, nil).first
+    it 'defaults :thinking to :unknown / :default_false' do
+      evidence = runner.send(
+        :build_capability_evidence,
+        model_id: 'claude-does-not-exist-99', model_data: catalog_entry('claude-does-not-exist-99')
+      )
 
-      expect(model.capabilities).to include(:completion, :streaming, :tools)
-      expect(model.capabilities).not_to include(:thinking)
+      expect(evidence[:thinking].status).to eq(:unknown)
+      expect(evidence[:thinking].source).to eq(:default_false)
     end
   end
 end
