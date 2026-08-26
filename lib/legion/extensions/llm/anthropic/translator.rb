@@ -34,6 +34,14 @@ module Legion
             ].freeze
           }.freeze
 
+          # Anthropic API minimum budget_tokens value.
+          MINIMUM_BUDGET_TOKENS = 1024
+
+          # Reserve output tokens when clamping budget to fit within max_tokens.
+          # The Anthropic API requires budget_tokens < max_tokens; this reserve
+          # ensures at least this many tokens remain for non-thinking output.
+          OUTPUT_RESERVE = 1024
+
           def capabilities = CAPABILITIES
           def config = @config || {}
 
@@ -361,33 +369,33 @@ module Legion
             thinking = canonical_request.thinking
             return false unless thinking
 
-            case thinking
-            when Canonical::Thinking::Config
-              thinking.enabled?
-            when Hash
-              !!thinking
-            else
-              true
-            end
+            thinking.is_a?(Canonical::Thinking::Config) && thinking.enabled?
           end
 
           def render_thinking_config(canonical_request)
             tc = canonical_request.thinking
-            budget = case tc
-                     when Canonical::Thinking::Config
-                       tc.budget
-                     when Hash
-                       tc[:budget] || tc['budget'] || tc[:budget_tokens] || tc['budget_tokens']
-                     end
+            budget = tc.resolved_budget
 
-            budget ||= canonical_request.params&.max_thinking_tokens
-            budget = default_thinking_budget if budget.nil? || budget.zero?
+            # Anthropic API 400s if budget_tokens >= max_tokens. Clamp to fit.
+            max_tokens = canonical_request.params&.max_tokens
+            if max_tokens
+              ceiling = max_tokens - OUTPUT_RESERVE
+              if budget && budget >= max_tokens
+                budget = [budget, ceiling].min
+                budget = [budget, MINIMUM_BUDGET_TOKENS].max
+                log.debug("[anthropic translator] clamped thinking budget to #{budget} (max_tokens=#{max_tokens})")
+              end
+              # If max_tokens is too small for even the minimum budget, the budget
+              # would be invalid. Floor at MINIMUM_BUDGET_TOKENS regardless.
+              budget = [budget, MINIMUM_BUDGET_TOKENS].max if budget && budget < MINIMUM_BUDGET_TOKENS
+            end
+
+            # Final floor: resolved_budget can be nil when effort is 'none' or
+            # neither axis was set — but we only reach here when thinking_enabled?
+            # returned true, so fall back to the minimum.
+            budget ||= MINIMUM_BUDGET_TOKENS
 
             { type: 'enabled', budget_tokens: budget }
-          end
-
-          def default_thinking_budget
-            @config[:default_thinking_budget]
           end
 
           # --- response_format ---

@@ -22,18 +22,17 @@ module Legion
           ::Legion::Extensions::Llm.provider_settings(
             family:   PROVIDER_FAMILY,
             instance: {
-              endpoint:                'https://api.anthropic.com',
-              api_version:             '2023-10-16',
-              default_max_tokens:      4096,
-              default_thinking_budget: 1024,
-              discovery_interval:      3600,
-              tier:                    :frontier,
-              transport:               :http,
-              credentials:             { api_key: 'env://ANTHROPIC_API_KEY' },
-              usage:                   { inference: true, embedding: false, image: false },
-              limits:                  { concurrency: 4 },
-              prompt_caching:          {},
-              fleet:                   {
+              endpoint:           'https://api.anthropic.com',
+              api_version:        '2023-10-16',
+              default_max_tokens: 4096,
+              discovery_interval: 3600,
+              tier:               :frontier,
+              transport:          :http,
+              credentials:        { api_key: 'env://ANTHROPIC_API_KEY' },
+              usage:              { inference: true, embedding: false, image: false },
+              limits:             { concurrency: 4 },
+              prompt_caching:     {},
+              fleet:              {
                 enabled:             false,
                 respond_to_requests: false,
                 capabilities:        %i[chat stream_chat]

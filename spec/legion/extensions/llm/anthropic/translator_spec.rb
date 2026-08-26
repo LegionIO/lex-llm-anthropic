@@ -5,7 +5,7 @@ require 'legion/extensions/llm/anthropic/translator'
 
 RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
   let(:canonical) { Legion::Extensions::Llm::Canonical }
-  let(:translator) { described_class.new(default_thinking_budget: 1024, default_max_tokens: 4096) }
+  let(:translator) { described_class.new(default_max_tokens: 4096) }
 
   it_behaves_like 'a canonical provider translator', described_class
 
@@ -31,7 +31,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
           messages: [canonical::Message.build(role: :user, content: [{ type: :text, text: 'hello' }])],
           params:   canonical::Params.new(max_tokens: 8192, temperature: nil, top_p: nil, top_k: nil,
                                           stop_sequences: nil, seed: nil, frequency_penalty: nil, presence_penalty: nil,
-                                          response_format: nil, max_thinking_tokens: nil, metadata: {})
+                                          response_format: nil, metadata: {})
         )
         wire = translator.render_request(req)
         expect(wire[:max_tokens]).to eq(8192)
@@ -42,7 +42,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
           messages: [canonical::Message.build(role: :user, content: 'hello')],
           params:   canonical::Params.new(max_tokens: nil, temperature: 0.7, top_p: nil, top_k: nil,
                                           stop_sequences: nil, seed: nil, frequency_penalty: nil, presence_penalty: nil,
-                                          response_format: nil, max_thinking_tokens: nil, metadata: {})
+                                          response_format: nil, metadata: {})
         )
         wire = translator.render_request(req)
         expect(wire[:temperature]).to eq(0.7)
@@ -53,7 +53,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
           messages: [canonical::Message.build(role: :user, content: 'hi')],
           params:   canonical::Params.new(max_tokens: nil, temperature: nil, top_p: nil, top_k: nil,
                                           stop_sequences: ['[END]'], seed: nil, frequency_penalty: nil,
-                                          presence_penalty: nil, response_format: nil, max_thinking_tokens: nil, metadata: {})
+                                          presence_penalty: nil, response_format: nil, metadata: {})
         )
         wire = translator.render_request(req)
         expect(wire[:stop_sequences]).to eq(['[END]'])
@@ -64,7 +64,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
           messages: [canonical::Message.build(role: :user, content: 'hi')],
           params:   canonical::Params.new(max_tokens: nil, temperature: nil, top_p: nil, top_k: nil,
                                           stop_sequences: nil, seed: 42, frequency_penalty: nil,
-                                          presence_penalty: nil, response_format: nil, max_thinking_tokens: nil, metadata: {})
+                                          presence_penalty: nil, response_format: nil, metadata: {})
         )
         wire = translator.render_request(req)
         expect(wire[:seed]).to eq(42)

@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.7] - 2026-08-25
+
+### Fixed
+- **Thinking budget reconciliation (SSOT bridge)** — `render_thinking_config` now uses `Canonical::Thinking::Config#resolved_budget` as the single source for the Anthropic wire `budget_tokens`, correctly deriving budget from effort-only clients (e.g. OpenAI effort → Anthropic budget). Removed references to deleted `Canonical::Params#max_thinking_tokens` (NoMethodError on lex-llm 0.8.x) and removed the fabricated `default_thinking_budget` config key fallback.
+- **Budget/max_tokens clamp** — The Anthropic API 400s when `budget_tokens >= max_tokens`. The translator now clamps budget to `max_tokens - OUTPUT_RESERVE` when the resolved budget would violate this constraint, with a floor at `MINIMUM_BUDGET_TOKENS` (1024).
+- **`thinking_enabled?` tightened** — Only gates on `Canonical::Thinking::Config#enabled?`; the Hash truthy branch (dead code since tc is always a Config) is removed.
+- **Stale spec migration** — Removed `max_thinking_tokens: nil` from `Params.new` calls in translator specs (member deleted in lex-llm 0.8.x).
+
+### Added
+- `translator_thinking_spec.rb` — effort-only → budget derivation, budget >= max_tokens clamping (including floor at 1024), disabled/absent thinking suppression, and source-level contract assertions (no `max_thinking_tokens` or `default_thinking_budget` references).
+
 ## [0.3.6] - 2026-08-20
 
 ### Changed

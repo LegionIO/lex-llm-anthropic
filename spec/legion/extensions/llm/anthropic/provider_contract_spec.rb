@@ -60,31 +60,20 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Provider do
                           })
     end
 
-    # /v1/models-discovered models carry no max_output_tokens metadata, so
-    # Model::Info#max_tokens is nil. The Messages API requires max_tokens on
-    # every request — the registered instance default (4096) must fill it in
-    # instead of .compact dropping the key (400 from the API).
+    # 0.8.0 R1: the funnel passes the plain model string to render_payload, and
+    # the Messages API requires max_tokens on every request — the registered
+    # instance default (4096) is the single source (per-model max_tokens is
+    # inventory evidence, not a render input).
     def render_for(model)
       messages = [Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello')]
       provider.send(:render_payload, messages, tools: {}, params: nil, model: model,
                                              stream: false, schema: nil, thinking: nil, tool_prefs: nil)
     end
 
-    it 'includes the registered default max_tokens when the model has no max_output_tokens metadata' do
-      model = Legion::Extensions::Llm::Model::Info.new(
-        id: 'claude-sonnet-4-6', provider: :anthropic, capabilities: %i[completion]
-      )
-      payload = render_for(model)
+    it 'renders the plain-string model and the registered default max_tokens' do
+      payload = render_for('claude-sonnet-4-6')
+      expect(payload[:model]).to eq('claude-sonnet-4-6')
       expect(payload[:max_tokens]).to eq(4096)
-    end
-
-    it 'prefers the model metadata max_tokens when present' do
-      model = Legion::Extensions::Llm::Model::Info.new(
-        id: 'claude-sonnet-4-6', provider: :anthropic, capabilities: %i[completion],
-        metadata: { max_output_tokens: 8192 }
-      )
-      payload = render_for(model)
-      expect(payload[:max_tokens]).to eq(8192)
     end
   end
 
