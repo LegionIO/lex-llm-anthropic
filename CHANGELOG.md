@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.7] - 2026-08-25
+
+### Fixed
+- **Thinking budget reconciliation (SSOT bridge)** — `render_thinking_config` now uses `Canonical::Thinking::Config#resolved_budget` as the single source for the Anthropic wire `budget_tokens`, correctly deriving budget from effort-only clients (e.g. OpenAI effort → Anthropic budget). Removed references to deleted `Canonical::Params#max_thinking_tokens` (NoMethodError on lex-llm 0.8.x) and removed the fabricated `default_thinking_budget` config key fallback.
+- **Budget/max_tokens clamp** — The Anthropic API 400s when `budget_tokens >= max_tokens`. The translator now clamps budget to `max_tokens - OUTPUT_RESERVE` when the resolved budget would violate this constraint, with a floor at `MINIMUM_BUDGET_TOKENS` (1024).
+- **`thinking_enabled?` tightened** — Only gates on `Canonical::Thinking::Config#enabled?`; the Hash truthy branch (dead code since tc is always a Config) is removed.
+- **Stale spec migration** — Removed `max_thinking_tokens: nil` from `Params.new` calls in translator specs (member deleted in lex-llm 0.8.x).
+
+### Added
+- `translator_thinking_spec.rb` — effort-only → budget derivation, budget >= max_tokens clamping (including floor at 1024), disabled/absent thinking suppression, and source-level contract assertions (no `max_thinking_tokens` or `default_thinking_budget` references).
+
+## [0.3.6] - 2026-08-20
+
+### Changed
+- **lex-llm 0.8.0 conformance (complete contract cut)** — The provider is migrated off the deleted legacy type set to Canonical end-to-end. The sync parse returns the translator's `Canonical::Response` directly (the `to_legacy_message` / `to_legacy_chunk` re-canonicalizing bridges are ripped); the streaming parse yields `Canonical::Chunk` objects (asserted by type, kit B2); the render seam renders the Anthropic wire payload FROM canonical values only — `Canonical::Message` content (`String` / `ContentBlock` / `Array<ContentBlock>`, thinking as a content block with the signature in block metadata, images as `:image` blocks), `Canonical::Params` (temperature lives only there — the `temperature:` kwarg is gone from the render boundary per 05 O4), and `Canonical::Thinking::Config` (`enabled?` + `resolved_budget`, no fabricated default). The provider-side `build_canonical_messages` re-implementation is ripped — central enforcement is the base funnel's job (08 F2). The fleet callable stays canonical-only: `chat` / `stream_chat` call `Provider#enforce_canonical_messages!` (the one shared helper at the exact-execution boundary) and take messages as the 0.8.0 funnel positional; the fleet wire's Hash `params` / `thinking` are normalized to `Canonical::Params` / `Canonical::Thinking::Config` at the boundary, and in-process canonical values pass through — the render path sees canonical only.
+- **Legacy coordinator wiring removed** — The `LegacyCoordinatorAdapter` compatibility adapter and the `scoped_refresher` require are gone from the discovery actor (the file is deleted in lex-llm 0.8.0); the `Inventory::Publisher` is constructed with the provider family only.
+- **discover_offerings served from the Registry snapshot** — The legacy `offering_from_model` read path (live model listing + filter helpers) is removed with the base; the discovery actor remains the sole publication path (07 C5 / 08 D3).
+- **Streaming tool-call fragments** — `content_block_start` and `input_json_delta` events emit the canonical delta-fragment Hash (`id` / `name` / `arguments` / `index`) the shared `StreamAccumulator` correlates by wire index; `message_start` carries the wire model in chunk metadata (the accumulator's `metadata[:model]` read), so the response model is wire-reported.
+- **lex-llm floor raised to 0.8.0** — Requires the complete 0.8.0 contract cut. A local-tree `lex-llm` path dependency in the test group resolves the adjacent checkout during development.
+
+### Added
+- **Boundary regression coverage (kit B1/B2)** — The dispatch-boundary conformance block asserts the loud reject through the real callable: plain-Hash input and the deleted legacy Message shape (replayed as a plain object with the old interface) raise `ArgumentError` on `chat` and `stream_chat`; `Canonical::Message` input renders through the full dispatch path and returns a `Canonical::Response` asserted by type.
+
 ## [0.3.5] - 2026-08-19
 
 ### Changed

@@ -21,11 +21,9 @@ module Legion
 
             def handle_fleet_request(**message)
               Legion::Extensions::Llm::Fleet::ProviderResponder.call(
-                payload:            message,
-                provider_family:    Anthropic::PROVIDER_FAMILY,
-                provider_class:     Anthropic::Provider,
-                provider_instances: -> { Anthropic.discover_instances },
-                registry:           Legion::Extensions::Llm::Inventory::Registry
+                payload:         message,
+                provider_family: Anthropic::PROVIDER_FAMILY,
+                registry:        Legion::Extensions::Llm::Inventory::Registry
               )
             end
           end

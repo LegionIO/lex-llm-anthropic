@@ -5,7 +5,8 @@ require 'legion/logging/helper'
 require 'legion/extensions/llm/anthropic/provider'
 require 'legion/extensions/llm/anthropic/translator'
 require 'legion/extensions/llm/anthropic/version'
-require 'legion/extensions/llm/anthropic/actors/discovery_refresh'
+require 'legion/extensions/llm/anthropic/helpers/callable'
+require 'legion/extensions/llm/anthropic/actors/discovery'
 
 module Legion
   module Extensions
@@ -21,18 +22,17 @@ module Legion
           ::Legion::Extensions::Llm.provider_settings(
             family:   PROVIDER_FAMILY,
             instance: {
-              endpoint:                'https://api.anthropic.com',
-              api_version:             '2023-10-16',
-              default_max_tokens:      4096,
-              default_thinking_budget: 1024,
-              discovery_interval:      3600,
-              tier:                    :frontier,
-              transport:               :http,
-              credentials:             { api_key: 'env://ANTHROPIC_API_KEY' },
-              usage:                   { inference: true, embedding: false, image: false },
-              limits:                  { concurrency: 4 },
-              prompt_caching:          {},
-              fleet:                   {
+              endpoint:           'https://api.anthropic.com',
+              api_version:        '2023-10-16',
+              default_max_tokens: 4096,
+              discovery_interval: 3600,
+              tier:               :frontier,
+              transport:          :http,
+              credentials:        { api_key: 'env://ANTHROPIC_API_KEY' },
+              usage:              { inference: true, embedding: false, image: false },
+              limits:             { concurrency: 4 },
+              prompt_caching:     {},
+              fleet:              {
                 enabled:             false,
                 respond_to_requests: false,
                 capabilities:        %i[chat stream_chat]
@@ -92,6 +92,10 @@ module Legion
 
               normalized = normalize_instance_config(config)
               next unless normalized[:anthropic_api_key]
+              # enabled: false is an operator shutdown — the shared pipeline
+              # claims whatever this catalog returns, so the filter lives here
+              # (single source for both the dispatch and discovery paths).
+              next if normalized[:enabled] == false
 
               normalized[:api_key] = normalized[:anthropic_api_key]
               normalized[:source] =

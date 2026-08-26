@@ -37,10 +37,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Runners::FleetWorker do
       message_id:        'msg-1'
     }
   end
-  let(:instances) { { local: { fleet: { respond_to_requests: true } } } }
-
   before do
-    allow(Legion::Extensions::Llm::Anthropic).to receive(:discover_instances).and_return(instances)
     allow(Legion::Extensions::Llm::Fleet::ProviderResponder).to receive(:call).and_return(:ok)
   end
 
@@ -49,11 +46,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Runners::FleetWorker do
 
     expect(result).to eq(:ok)
     expect(Legion::Extensions::Llm::Fleet::ProviderResponder).to have_received(:call).with(
-      payload:            message,
-      provider_family:    :anthropic,
-      provider_class:     Legion::Extensions::Llm::Anthropic::Provider,
-      provider_instances: satisfy { |resolver| resolver.call == instances },
-      registry:           Legion::Extensions::Llm::Inventory::Registry
+      payload:         message,
+      provider_family: :anthropic,
+      registry:        Legion::Extensions::Llm::Inventory::Registry
     )
   end
 

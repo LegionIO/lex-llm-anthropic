@@ -1,15 +1,13 @@
 # frozen_string_literal: true
 
 require 'spec_helper'
+require 'legion/extensions/llm/inventory/registry'
 
 RSpec.describe Legion::Extensions::Llm::Anthropic do
   let(:provider_config) { { anthropic_api_key: 'test-anthropic-key', anthropic_version: '2023-06-01' } }
   let(:provider) { described_class::Provider.new(provider_config) }
-  let(:claude_model) do
-    Legion::Extensions::Llm::Model::Info.new(id: 'claude-sonnet-4-5-20250929', provider: :anthropic,
-                                             metadata: { max_output_tokens: 8192 })
-  end
-  let(:registry_publisher) { instance_double(Legion::Extensions::Llm::RegistryPublisher) }
+  # 0.8.0 R1: the funnel takes the plain model string.
+  let(:claude_model) { 'claude-sonnet-4-5-20250929' }
 
   it 'exposes provider defaults with inherited fleet settings' do
     settings = described_class.default_settings
@@ -61,50 +59,39 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     expect(payload[:tool_choice]).to eq(lookup_tool_choice)
   end
 
-  it 'parses completion responses with text, thinking, tool calls, and usage' do
-    message = provider.send(:parse_completion_response, fake_response(completion_body))
+  it 'parses completion responses into a Canonical::Response with text, thinking, tool calls, and usage' do
+    response = provider.send(:parse_completion_response, fake_response(completion_body))
 
-    expect_completion_text_and_thinking(message)
-    expect_completion_tool_call(message)
-    expect_completion_usage(message)
+    expect(response).to be_a(Legion::Extensions::Llm::Canonical::Response)
+    expect_completion_text_and_thinking(response)
+    expect_completion_tool_call(response)
+    expect_completion_usage(response)
   end
 
-  it 'parses Anthropic model listing responses' do
-    models = parsed_models
+  it 'serves discover_offerings from the registry snapshot without HTTP (0.8.0 D3: the actor is the sole writer)' do
+    Legion::Extensions::Llm::Inventory::Registry.reset!
+    allow(provider.connection).to receive(:get)
 
-    expect(models.first.to_h).to include(expected_model_listing)
-    expect(models.first.capabilities).to include(:completion, :streaming, :tools)
-  end
+    offerings = provider.discover_offerings(live: true)
 
-  it 'does not publish models via the legacy registry publisher from discover_offerings (SSOT v3: actor is sole publisher)' do
-    stub_registry_publisher
-    stub_model_discovery
-
-    provider.discover_offerings(live: true)
-
-    expect(registry_publisher).not_to have_received(:publish_models_async)
-  end
-
-  it 'builds sanitized lex-llm registry events for Anthropic model availability' do
-    events = capture_registry_events([claude_model], readiness: { ready: true })
-
-    expect(events.first.to_h).to include(event_type: :offering_available)
-    expect(events.first.to_h.dig(:offering, :provider_family)).to eq(:anthropic)
-    expect(events.first.to_h.dig(:offering, :model)).to eq('claude-sonnet-4-5-20250929')
+    expect(offerings).to be_empty
+    expect(provider.connection).not_to have_received(:get)
   end
 
   def chat_payload(tools: {}, tool_prefs: nil)
     messages = [
-      Legion::Extensions::Llm::Message.new(role: :system, content: 'answer briefly'),
-      Legion::Extensions::Llm::Message.new(role: :user, content: 'hello')
+      Legion::Extensions::Llm::Canonical::Message.build(role: :system, content: 'answer briefly'),
+      Legion::Extensions::Llm::Canonical::Message.build(role: :user, content: 'hello')
     ]
-    thinking = Legion::Extensions::Llm::Thinking::Config.new(budget: 2048)
-    provider.send(:render_payload, messages, tools: tools, temperature: 0.2, model: claude_model, stream: false,
-                                             schema: nil, thinking: thinking, tool_prefs: tool_prefs)
+    thinking = Legion::Extensions::Llm::Canonical::Thinking::Config.build(budget: 2048)
+    params = Legion::Extensions::Llm::Canonical::Params.build(temperature: 0.2)
+    provider.send(:render_payload, messages, tools: tools, model: claude_model, stream: false,
+                                             schema: nil, thinking: thinking, params: params,
+                                             tool_prefs: tool_prefs)
   end
 
   def expect_chat_envelope(payload)
-    expect(payload.values_at(:model, :stream, :max_tokens)).to eq(['claude-sonnet-4-5-20250929', false, 8192])
+    expect(payload.values_at(:model, :stream, :max_tokens)).to eq(['claude-sonnet-4-5-20250929', false, 4096])
     expect(payload[:thinking]).to eq({ type: 'enabled', budget_tokens: 2048 })
     expect(payload[:temperature]).to eq(0.2)
   end
@@ -126,34 +113,23 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     { type: 'tool', name: 'lookup', disable_parallel_tool_use: true }
   end
 
-  def expect_completion_text_and_thinking(message)
-    expect(message.content).to eq('done')
-    expect(message.thinking.text).to eq('reasoned')
-    expect(message.thinking.signature).to eq('sig-1')
+  def expect_completion_text_and_thinking(response)
+    expect(response.text).to eq('done')
+    expect(response.thinking).to be_a(Legion::Extensions::Llm::Canonical::Thinking)
+    expect(response.thinking.content).to eq('reasoned')
+    expect(response.thinking.signature).to eq('sig-1')
   end
 
-  def expect_completion_tool_call(message)
-    expect(message.tool_calls.fetch('toolu_1').to_h).to eq(
-      { id: 'toolu_1', name: 'lookup', arguments: { 'id' => 1 } }
-    )
+  def expect_completion_tool_call(response)
+    tool_call = response.tool_calls.find { |tc| tc.id == 'toolu_1' }
+    expect(tool_call).to be_a(Legion::Extensions::Llm::Canonical::ToolCall)
+    expect([tool_call.name, tool_call.arguments]).to eq(['lookup', { 'id' => 1 }])
   end
 
-  def expect_completion_usage(message)
-    expect([message.model_id, message.input_tokens, message.output_tokens]).to eq(
+  def expect_completion_usage(response)
+    expect([response.model, response.usage.input_tokens, response.usage.output_tokens]).to eq(
       ['claude-sonnet-4-5-20250929', 11, 7]
     )
-  end
-
-  def parsed_models
-    provider.send(:parse_list_models_response, fake_response(models_body), :anthropic, nil)
-  end
-
-  def expected_model_listing
-    {
-      id:       'claude-opus-4-1-20250805',
-      name:     'Claude Opus 4.1',
-      provider: :anthropic
-    }
   end
 
   def tool(name, description, params_schema)
@@ -172,45 +148,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
     }
   end
 
-  def models_body
-    {
-      'data' => [
-        {
-          'id'           => 'claude-opus-4-1-20250805',
-          'display_name' => 'Claude Opus 4.1',
-          'created_at'   => '2025-08-05T00:00:00Z'
-        }
-      ]
-    }
-  end
-
   def fake_response(body)
     Struct.new(:body).new(body)
-  end
-
-  def stub_registry_publisher
-    allow(described_class::Provider).to receive(:registry_publisher).and_return(registry_publisher)
-    allow(registry_publisher).to receive(:publish_models_async)
-  end
-
-  def stub_model_discovery
-    allow(provider.connection).to receive(:get).with('/v1/models').and_return(fake_response(models_body))
-  end
-
-  def expect_registry_publish(models)
-    Array(models).each do |model|
-      expect(registry_publisher).to have_received(:publish_models_async)
-        .with([model], readiness: hash_including(provider: :anthropic, live: true))
-    end
-  end
-
-  def capture_registry_events(models, readiness:)
-    publisher = Legion::Extensions::Llm::RegistryPublisher.new(provider_family: :anthropic)
-    events = []
-    allow(publisher).to receive(:publishing_available?).and_return(true)
-    allow(publisher).to receive(:publish_event) { |event| events << event }
-    allow(publisher).to receive(:schedule).and_yield
-    publisher.publish_models_async(models, readiness:)
-    events
   end
 end

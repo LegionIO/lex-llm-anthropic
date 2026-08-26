@@ -5,7 +5,7 @@ require 'legion/extensions/llm/anthropic/translator'
 
 RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
   let(:canonical) { Legion::Extensions::Llm::Canonical }
-  let(:translator) { described_class.new(default_thinking_budget: 1024, default_max_tokens: 4096) }
+  let(:translator) { described_class.new(default_max_tokens: 4096) }
 
   it_behaves_like 'a canonical provider translator', described_class
 
@@ -31,7 +31,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
           messages: [canonical::Message.build(role: :user, content: [{ type: :text, text: 'hello' }])],
           params:   canonical::Params.new(max_tokens: 8192, temperature: nil, top_p: nil, top_k: nil,
                                           stop_sequences: nil, seed: nil, frequency_penalty: nil, presence_penalty: nil,
-                                          response_format: nil, max_thinking_tokens: nil)
+                                          response_format: nil, metadata: {})
         )
         wire = translator.render_request(req)
         expect(wire[:max_tokens]).to eq(8192)
@@ -42,7 +42,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
           messages: [canonical::Message.build(role: :user, content: 'hello')],
           params:   canonical::Params.new(max_tokens: nil, temperature: 0.7, top_p: nil, top_k: nil,
                                           stop_sequences: nil, seed: nil, frequency_penalty: nil, presence_penalty: nil,
-                                          response_format: nil, max_thinking_tokens: nil)
+                                          response_format: nil, metadata: {})
         )
         wire = translator.render_request(req)
         expect(wire[:temperature]).to eq(0.7)
@@ -53,7 +53,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
           messages: [canonical::Message.build(role: :user, content: 'hi')],
           params:   canonical::Params.new(max_tokens: nil, temperature: nil, top_p: nil, top_k: nil,
                                           stop_sequences: ['[END]'], seed: nil, frequency_penalty: nil,
-                                          presence_penalty: nil, response_format: nil, max_thinking_tokens: nil)
+                                          presence_penalty: nil, response_format: nil, metadata: {})
         )
         wire = translator.render_request(req)
         expect(wire[:stop_sequences]).to eq(['[END]'])
@@ -64,7 +64,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
           messages: [canonical::Message.build(role: :user, content: 'hi')],
           params:   canonical::Params.new(max_tokens: nil, temperature: nil, top_p: nil, top_k: nil,
                                           stop_sequences: nil, seed: 42, frequency_penalty: nil,
-                                          presence_penalty: nil, response_format: nil, max_thinking_tokens: nil)
+                                          presence_penalty: nil, response_format: nil, metadata: {})
         )
         wire = translator.render_request(req)
         expect(wire[:seed]).to eq(42)
@@ -288,7 +288,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
         expect(chunk.type).to eq(:tool_call_delta)
       end
 
-      it 'parses content_block_start with tool_use' do
+      it 'parses content_block_start with tool_use into a fragment Hash' do
         raw = {
           'type'          => 'content_block_start',
           'index'         => 1,
@@ -297,8 +297,9 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
         chunk = translator.parse_chunk(raw)
         expect(chunk).not_to be_nil
         expect(chunk.type).to eq(:tool_call_delta)
-        expect(chunk.tool_call.id).to eq('toolu_123')
-        expect(chunk.tool_call.name).to eq('read_file')
+        expect(chunk.tool_call[:id]).to eq('toolu_123')
+        expect(chunk.tool_call[:name]).to eq('read_file')
+        expect(chunk.tool_call[:index]).to eq(1)
       end
 
       it 'parses message_delta with stop_reason and usage' do
@@ -346,7 +347,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
         expect(chunk.usage.input_tokens).to eq(250)
       end
 
-      it 'produces nil-id tool_call for input_json_delta fragments' do
+      it 'produces a nil-id fragment for input_json_delta (continuation by wire index)' do
         raw = {
           'type'  => 'content_block_delta',
           'index' => 1,
@@ -355,12 +356,13 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
         chunk = translator.parse_chunk(raw)
         expect(chunk).not_to be_nil
         expect(chunk.type).to eq(:tool_call_delta)
-        expect(chunk.tool_call.id).to be_nil
-        expect(chunk.tool_call.arguments).to eq('{"path":"src/m')
+        expect(chunk.tool_call[:id]).to be_nil
+        expect(chunk.tool_call[:arguments]).to eq('{"path":"src/m')
+        expect(chunk.tool_call[:index]).to eq(1)
       end
     end
 
-    context 'end-to-end tool call accumulation through provider bridge' do
+    context 'end-to-end tool call accumulation through the provider build_chunk boundary' do
       let(:provider) do
         Legion::Extensions::Llm::Anthropic::Provider.new({
                                                            anthropic_api_key: 'test-key', request_timeout: 30, max_retries: 0,
@@ -388,12 +390,16 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
         accumulator.add(provider.send(:build_chunk, first_json_delta))
         accumulator.add(provider.send(:build_chunk, second_json_delta))
 
-        message = accumulator.to_message(nil)
-        expect(message.tool_calls['toolu_abc'].arguments).to eq({ 'path' => 'src/main.rb' })
+        response = accumulator.to_response(model: nil)
+        expect(response).to be_a(canonical::Response)
+        tool_call = response.tool_calls.find { |tc| tc.id == 'toolu_abc' }
+        expect(tool_call).to be_a(canonical::ToolCall)
+        expect(tool_call.name).to eq('read_file')
+        expect(tool_call.arguments).to eq({ 'path' => 'src/main.rb' })
       end
     end
 
-    context 'end-to-end message_start model/usage propagation through provider bridge' do
+    context 'end-to-end message_start model/usage propagation through the provider build_chunk boundary' do
       let(:provider) do
         Legion::Extensions::Llm::Anthropic::Provider.new({
                                                            anthropic_api_key: 'test-key', request_timeout: 30, max_retries: 0,
@@ -401,7 +407,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
                                                          })
       end
 
-      it 'accumulator receives model_id and input_tokens from message_start' do
+      it 'accumulator receives the wire model (chunk metadata) and input_tokens from message_start' do
         accumulator = Legion::Extensions::Llm::StreamAccumulator.new
 
         message_start_event = {
@@ -413,10 +419,10 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
         }
 
         accumulator.add(provider.send(:build_chunk, message_start_event))
-        message = accumulator.to_message(nil)
+        response = accumulator.to_response(model: nil)
 
-        expect(message.model_id).to eq('claude-sonnet-4-20250514')
-        expect(message.input_tokens).to eq(500)
+        expect(response.model).to eq('claude-sonnet-4-20250514')
+        expect(response.usage.input_tokens).to eq(500)
       end
     end
   end

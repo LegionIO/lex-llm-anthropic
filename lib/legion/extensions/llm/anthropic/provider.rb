@@ -56,33 +56,6 @@ module Legion
             raise NotImplementedError, 'Anthropic does not expose embeddings through this provider'
           end
 
-          def list_models(**)
-            log.debug { 'listing available Anthropic models' }
-            super.tap do |models|
-              log.debug { "discovered #{Array(models).size} Anthropic model(s)" }
-            end
-          end
-
-          def discover_offerings(live: false, raise_on_unreachable: false, **filters)
-            return filter_cached_offerings(Array(@cached_offerings), filters) unless live
-
-            provider_health = health(live:)
-            @cached_offerings = Array(list_models(live:, **filters)).filter_map do |model|
-              next unless model_matches_filters?(model, filters)
-              next unless model_allowed?(model.id)
-
-              log.debug("[#{slug}] instance=#{provider_instance_id} action=model_discovered model=#{model.id} family=#{model.family}")
-              offering_from_model(model, health: provider_health)
-            end
-            log.info("[#{slug}] instance=#{provider_instance_id} action=discover_complete model_count=#{Array(@cached_offerings).size}")
-            @cached_offerings
-          rescue Faraday::ConnectionFailed, Faraday::TimeoutError => e
-            log.warn("[#{slug}] instance=#{provider_instance_id} unreachable: #{e.message}")
-            raise if raise_on_unreachable
-
-            []
-          end
-
           CONTEXT_WINDOWS = {
             'claude-opus-4'   => 200_000,
             'claude-sonnet-4' => 200_000,
@@ -93,11 +66,14 @@ module Legion
             'claude-3-haiku'  => 200_000
           }.freeze
 
-          COMPLETION_BASE = [:completion].freeze
-
           private
 
-          def render_payload(messages, tools:, temperature:, model:, stream:, schema:, thinking:, tool_prefs:)
+          # The 0.8.0 render boundary (08 R1): messages arrive as
+          # Canonical::Message (the base funnel enforces centrally — 08 F2),
+          # params arrive as Canonical::Params (temperature lives only there —
+          # 05 O4), thinking as Canonical::Thinking::Config. This method renders
+          # the Anthropic wire payload FROM those canonical values.
+          def render_payload(messages, tools:, model:, stream:, schema:, thinking:, params:, tool_prefs:)
             log_render_payload(messages:, tools:, model:, stream:, schema:)
             system_messages, chat_messages = messages.partition { |message| message.role == :system }
 
@@ -106,13 +82,13 @@ module Legion
             cacheable_count = caching ? [chat_messages.size - exclude_count, 0].max : 0
 
             {
-              model:         model.id,
-              messages:      format_messages(chat_messages, thinking: thinking_enabled?(thinking), cacheable_count:),
+              model:         model.to_s,
+              messages:      format_messages(chat_messages, cacheable_count:),
               stream:        stream,
-              max_tokens:    model.max_tokens || default_max_tokens,
+              max_tokens:    default_max_tokens,
               system:        system_content(system_messages, cache: caching),
               thinking:      thinking_payload(thinking),
-              temperature:   temperature,
+              temperature:   params&.temperature,
               tools:         format_tools(tools, cache: caching),
               tool_choice:   tool_choice(tool_prefs),
               output_config: output_config(schema)
@@ -129,7 +105,7 @@ module Legion
 
           def log_render_payload(messages:, tools:, model:, stream:, schema:)
             log.debug do
-              "rendering Anthropic #{stream ? 'stream' : 'chat'} payload for #{model.id} " \
+              "rendering Anthropic #{stream ? 'stream' : 'chat'} payload for #{model} " \
                 "with #{messages.size} message(s), #{tools.size} tool(s), schema=#{!schema.nil?}"
             end
           end
@@ -141,17 +117,17 @@ module Legion
             content.empty? ? nil : content
           end
 
-          def format_messages(messages, thinking:, cacheable_count: 0)
+          def format_messages(messages, cacheable_count: 0)
             messages.each_with_index.map do |message, index|
               cache = index < cacheable_count
               if message_tool_call?(message)
-                format_tool_call_message(message, thinking:, cache:)
+                format_tool_call_message(message, cache:)
               elsif message_tool_result?(message)
                 format_tool_result_message(message, cache:)
               else
                 {
                   role:    anthropic_role(message.role),
-                  content: content_blocks(message.content, thinking:, message:, cache:)
+                  content: content_blocks(message.content, cache:)
                 }
               end
             end
@@ -161,26 +137,49 @@ module Legion
             role == :assistant ? 'assistant' : 'user'
           end
 
-          def content_blocks(content, thinking: false, message: nil, cache: false)
-            raw_blocks = raw_content(content)
-            return with_thinking(raw_blocks, message, thinking) if raw_blocks
+          # Canonical content only (R4): String | ContentBlock |
+          # Array<ContentBlock> | nil. Thinking is a content block on the
+          # canonical message — it maps through the same path, with the
+          # signature (provider dialect) read from the block metadata.
+          def content_blocks(content, cache: false)
+            case content
+            when nil then []
+            when String
+              return [] if content.empty?
 
-            blocks = []
-            blocks << text_block(content_text(content), cache:) unless content_text(content).to_s.empty?
-            blocks.concat(attachment_blocks(content)) if content.respond_to?(:attachments)
-            with_thinking(blocks, message, thinking)
+              [text_block(content, cache:)]
+            when Legion::Extensions::Llm::Canonical::ContentBlock
+              wire = content_block_to_wire(content, cache:)
+              wire ? [wire] : []
+            when Array
+              content.filter_map { |block| content_block_to_wire(block, cache:) }
+            end
           end
 
-          def raw_content(content)
-            return nil unless content.is_a?(Legion::Extensions::Llm::Content::Raw)
+          # One canonical block to one Anthropic wire block; nil when the block
+          # renders nothing (an empty text block would 400 on the API).
+          def content_block_to_wire(block, cache: false)
+            case block.type
+            when :text
+              return nil if block.text.to_s.empty?
 
-            Array(content.format)
-          end
-
-          def content_text(content)
-            return content.text if content.respond_to?(:text)
-
-            content.to_s
+              text_block(block.text, cache:)
+            when :thinking
+              thinking_block(block)
+            when :image
+              {
+                type:   'image',
+                source: {
+                  type:       block.source_type || 'base64',
+                  media_type: block.media_type,
+                  data:       block.data
+                }
+              }
+            else
+              raise ArgumentError,
+                    "anthropic provider cannot render content block type #{block.type.inspect} — " \
+                    'only text, thinking, and image blocks cross this wire'
+            end
           end
 
           def text_block(text, cache: false)
@@ -189,26 +188,11 @@ module Legion
             end
           end
 
-          def attachment_blocks(content)
-            content.attachments.filter_map do |attachment|
-              next unless attachment.image?
-
-              {
-                type:   'image',
-                source: {
-                  type:       'base64',
-                  media_type: attachment.mime_type,
-                  data:       attachment.encoded
-                }
-              }
-            end
-          end
-
-          def with_thinking(blocks, message, enabled)
-            return blocks unless enabled && message&.role == :assistant
-
-            thinking_block = thinking_block(message.respond_to?(:thinking) ? message.thinking : nil)
-            thinking_block ? [thinking_block, *blocks] : blocks
+          def thinking_block(block)
+            wire = { type: 'thinking', thinking: block.text.to_s }
+            signature = block.metadata&.dig(:signature)
+            wire[:signature] = signature if signature
+            wire
           end
 
           def message_tool_call?(message)
@@ -219,13 +203,11 @@ module Legion
             !message.tool_call_id.nil? && !message.tool_call_id.to_s.empty?
           end
 
-          def format_tool_call_message(message, thinking:, cache:)
-            blocks = content_blocks(message.content, thinking:, message:, cache:)
-            # tool_calls is an Array of ToolCall since the adapter stopped
-            # name-keying them (name-keyed hashes silently dropped parallel
-            # same-name calls); tolerate the legacy Hash shape from old callers.
-            calls = message.tool_calls.is_a?(Hash) ? message.tool_calls.values : Array(message.tool_calls)
-            calls.each { |tool_call| blocks << tool_use_block(tool_call, cache:) }
+          def format_tool_call_message(message, cache:)
+            blocks = content_blocks(message.content, cache:)
+            # Canonical::Message#tool_calls is Array<Canonical::ToolCall> —
+            # the name-keyed Hash shape is gone (04 L2).
+            Array(message.tool_calls).each { |tool_call| blocks << tool_use_block(tool_call, cache:) }
             { role: 'assistant', content: blocks }
           end
 
@@ -255,40 +237,13 @@ module Legion
             }
           end
 
+          # Canonical::Thinking::Config at the render boundary: enabled? is the
+          # law (04 §8), resolved_budget is the single effort<->budget source —
+          # no fabricated default.
           def thinking_payload(thinking)
-            return nil unless thinking_enabled?(thinking)
+            return nil unless thinking&.enabled?
 
-            { type: 'enabled', budget_tokens: thinking_budget(thinking) }
-          end
-
-          def thinking_enabled?(thinking)
-            return false if thinking.nil?
-            return thinking.enabled? if thinking.respond_to?(:enabled?)
-
-            !!thinking
-          end
-
-          def thinking_budget(thinking)
-            return thinking if thinking.is_a?(Integer)
-            return extract_hash_budget(thinking) if thinking.is_a?(Hash)
-            return thinking.budget if thinking.respond_to?(:budget) && thinking.budget
-
-            1024
-          end
-
-          # Anthropic API uses :budget_tokens, but legacy config may use :budget
-          def extract_hash_budget(thinking)
-            thinking[:budget_tokens] || thinking['budget_tokens'] || thinking[:budget] || thinking['budget']
-          end
-
-          def thinking_block(thinking)
-            return nil unless thinking
-
-            if thinking.text
-              { type: 'thinking', thinking: thinking.text, signature: thinking.signature }.compact
-            elsif thinking.signature
-              { type: 'redacted_thinking', data: thinking.signature }
-            end
+            { type: 'enabled', budget_tokens: thinking.resolved_budget }
           end
 
           def format_tools(tools, cache: false)
@@ -355,132 +310,18 @@ module Legion
             { format: { type: 'json', schema: normalized } }
           end
 
+          # 0.8.0 parse boundary (08 R2): the sync parse returns the
+          # Canonical::Response the translator produced — no re-canonicalizing
+          # bridge, no legacy shape.
           def parse_completion_response(response)
-            body = response.body
-            canonical = translator.parse_response(body)
-            to_legacy_message(canonical, body)
+            translator.parse_response(response.body)
           end
 
+          # The streaming parse yields Canonical::Chunk objects (05 O5); the
+          # base Streaming module accumulates them and terminates the sequence
+          # with exactly one done (or error) chunk.
           def build_chunk(data)
-            canonical_chunk = translator.parse_chunk(data)
-            return nil if canonical_chunk.nil?
-
-            to_legacy_chunk(canonical_chunk, data)
-          end
-
-          def to_legacy_message(canonical, raw_body)
-            usage = canonical.usage
-            Legion::Extensions::Llm::Message.new(
-              role:                  :assistant,
-              content:               canonical.text,
-              model_id:              canonical.model,
-              thinking:              if canonical.thinking
-                                       Legion::Extensions::Llm::Thinking.build(
-                                         text:      canonical.thinking.content,
-                                         signature: canonical.thinking.signature
-                                       )
-                                     end,
-              tool_calls:            legacy_tool_calls(canonical.tool_calls),
-              input_tokens:          usage&.input_tokens,
-              output_tokens:         usage&.output_tokens,
-              cached_tokens:         usage&.cache_read_tokens,
-              cache_creation_tokens: usage&.cache_write_tokens,
-              thinking_tokens:       usage&.thinking_tokens,
-              raw:                   raw_body
-            )
-          end
-
-          def to_legacy_chunk(canonical_chunk, raw_data)
-            Legion::Extensions::Llm::Chunk.new(
-              role:          :assistant,
-              content:       canonical_chunk.text_delta? ? canonical_chunk.delta : nil,
-              model_id:      raw_data.dig('message', 'model'),
-              thinking:      if canonical_chunk.thinking_delta?
-                               Legion::Extensions::Llm::Thinking.build(
-                                 text:      canonical_chunk.delta,
-                                 signature: canonical_chunk.signature
-                               )
-                             end,
-              input_tokens:  canonical_chunk.usage&.input_tokens,
-              output_tokens: canonical_chunk.usage&.output_tokens,
-              tool_calls:    legacy_streaming_tool_calls(canonical_chunk)
-            )
-          end
-
-          def legacy_tool_calls(canonical_tool_calls)
-            return nil if canonical_tool_calls.nil? || canonical_tool_calls.empty?
-
-            canonical_tool_calls.to_h do |tc|
-              [
-                tc.id,
-                Legion::Extensions::Llm::ToolCall.new(
-                  id: tc.id, name: tc.name, arguments: tc.arguments || {}
-                )
-              ]
-            end
-          end
-
-          def legacy_streaming_tool_calls(canonical_chunk)
-            return nil unless canonical_chunk.tool_call_delta?
-
-            tc = canonical_chunk.tool_call
-            return nil unless tc
-
-            { tc.id => Legion::Extensions::Llm::ToolCall.new(
-              id: tc.id, name: tc.name, arguments: tc.arguments || ''
-            ) }
-          end
-
-          def parse_list_models_response(response, provider, _capabilities)
-            Array(response.body['data']).map do |model|
-              model_id = model.fetch('id')
-              detail = model_detail(model_id)
-              ctx = detail&.dig(:context_window) || infer_context_window(model_id)
-              resolved = resolve_model_capabilities(model_id)
-              Legion::Extensions::Llm::Model::Info.new(
-                id:             model_id,
-                name:           model['display_name'] || model_id,
-                provider:       provider,
-                capabilities:   COMPLETION_BASE + resolved[:capabilities],
-                context_length: ctx,
-                metadata:       model.merge('created_at' => model['created_at']).compact
-              )
-            end
-          end
-
-          def resolve_model_capabilities(model_id)
-            Legion::Extensions::Llm::CapabilityPolicy.resolve(
-              real:              {},
-              provider_catalog:  catalog_capabilities(model_id),
-              probe:             {},
-              provider_envelope: { streaming: true, tools: true },
-              provider_config:   provider_capability_config,
-              instance_config:   instance_capability_config,
-              model_config:      model_capability_config(model_id)
-            )
-          end
-
-          # Boolean capability hash for a model, read from the shared lex-llm
-          # catalog (models.dev-sourced). This is where Claude extended-thinking
-          # support (`reasoning` -> `:thinking`) is surfaced during discovery, so
-          # thinking-capable Claude models advertise `:thinking` and the router's
-          # thinking filter can route them. Unknown models return `{}`, falling
-          # back to the provider envelope. The catalog is the single source of
-          # truth for per-model capabilities across every provider.
-          def catalog_capabilities(model_id)
-            model = Legion::Extensions::Llm::Models.find(model_id, :anthropic)
-            Array(model&.capabilities).each_with_object({}) do |capability, result|
-              canonical = Legion::Extensions::Llm::Capabilities.canonical(capability)
-              next unless Legion::Extensions::Llm::CapabilityPolicy::OPTIONAL_CAPABILITIES.include?(canonical)
-
-              result[canonical] = true
-            end
-          rescue Legion::Extensions::Llm::ModelNotFoundError
-            {}
-          rescue StandardError => e
-            handle_exception(e, level: :warn, handled: true,
-                                operation: "#{slug}.catalog_capabilities", model: model_id)
-            {}
+            translator.parse_chunk(data)
           end
 
           def infer_context_window(model_id)

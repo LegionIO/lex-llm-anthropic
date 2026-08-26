@@ -34,6 +34,14 @@ module Legion
             ].freeze
           }.freeze
 
+          # Anthropic API minimum budget_tokens value.
+          MINIMUM_BUDGET_TOKENS = 1024
+
+          # Reserve output tokens when clamping budget to fit within max_tokens.
+          # The Anthropic API requires budget_tokens < max_tokens; this reserve
+          # ensures at least this many tokens remain for non-thinking output.
+          OUTPUT_RESERVE = 1024
+
           def capabilities = CAPABILITIES
           def config = @config || {}
 
@@ -361,33 +369,33 @@ module Legion
             thinking = canonical_request.thinking
             return false unless thinking
 
-            case thinking
-            when Canonical::Thinking::Config
-              thinking.enabled?
-            when Hash
-              !!thinking
-            else
-              true
-            end
+            thinking.is_a?(Canonical::Thinking::Config) && thinking.enabled?
           end
 
           def render_thinking_config(canonical_request)
             tc = canonical_request.thinking
-            budget = case tc
-                     when Canonical::Thinking::Config
-                       tc.budget
-                     when Hash
-                       tc[:budget] || tc['budget'] || tc[:budget_tokens] || tc['budget_tokens']
-                     end
+            budget = tc.resolved_budget
 
-            budget ||= canonical_request.params&.max_thinking_tokens
-            budget = default_thinking_budget if budget.nil? || budget.zero?
+            # Anthropic API 400s if budget_tokens >= max_tokens. Clamp to fit.
+            max_tokens = canonical_request.params&.max_tokens
+            if max_tokens
+              ceiling = max_tokens - OUTPUT_RESERVE
+              if budget && budget >= max_tokens
+                budget = [budget, ceiling].min
+                budget = [budget, MINIMUM_BUDGET_TOKENS].max
+                log.debug("[anthropic translator] clamped thinking budget to #{budget} (max_tokens=#{max_tokens})")
+              end
+              # If max_tokens is too small for even the minimum budget, the budget
+              # would be invalid. Floor at MINIMUM_BUDGET_TOKENS regardless.
+              budget = [budget, MINIMUM_BUDGET_TOKENS].max if budget && budget < MINIMUM_BUDGET_TOKENS
+            end
+
+            # Final floor: resolved_budget can be nil when effort is 'none' or
+            # neither axis was set — but we only reach here when thinking_enabled?
+            # returned true, so fall back to the minimum.
+            budget ||= MINIMUM_BUDGET_TOKENS
 
             { type: 'enabled', budget_tokens: budget }
-          end
-
-          def default_thinking_budget
-            @config[:default_thinking_budget]
           end
 
           # --- response_format ---
@@ -533,15 +541,15 @@ module Legion
                 signature:   delta[:signature] || delta['signature']
               )
             when 'input_json_delta'
-              tc = Canonical::ToolCall.new(
-                id: nil, exchange_id: nil, name: nil, source: nil,
-                arguments: delta[:partial_json] || delta['partial_json'] || '',
-                status: nil, duration_ms: nil, result: nil, error: nil,
-                started_at: nil, finished_at: nil, category: nil,
-                data_handling_classification: nil, policy_decision: nil
-              )
+              # The chunk's tool_call member is the delta FRAGMENT (Hash with
+              # id/name/arguments/index) — the StreamAccumulator correlates
+              # fragments by the wire index and assembles arguments before the
+              # one strict parser runs (10 U2).
               Canonical::Chunk.tool_call_delta(
-                tool_call:   tc,
+                tool_call:   {
+                  arguments: delta[:partial_json] || delta['partial_json'] || '',
+                  index:     index
+                },
                 request_id:  raw[:request_id],
                 block_index: index
               )
@@ -558,14 +566,16 @@ module Legion
             block_type = content_block[:type] || content_block['type']
             return nil unless block_type == 'tool_use'
 
-            tc = Canonical::ToolCall.build(
-              id:   content_block[:id] || content_block['id'],
-              name: content_block[:name] || content_block['name']
-            )
+            index = raw[:index] || raw['index']
             Canonical::Chunk.tool_call_delta(
-              tool_call:   tc,
+              tool_call:   {
+                id:        content_block[:id] || content_block['id'],
+                name:      content_block[:name] || content_block['name'],
+                arguments: '',
+                index:     index
+              },
               request_id:  raw[:request_id],
-              block_index: raw[:index] || raw['index']
+              block_index: index
             )
           end
 
@@ -574,10 +584,16 @@ module Legion
             message = {} unless message.is_a?(Hash)
             usage_raw = message[:usage] || message['usage']
             usage = Canonical::Usage.from_hash(usage_raw) if usage_raw.is_a?(Hash) && usage_raw.any?
+            # The wire model rides in chunk metadata: the StreamAccumulator
+            # reads metadata[:model] as the response model (wire-reported
+            # model wins over the Selection-derived one).
+            model = message[:model] || message['model']
 
-            Canonical::Chunk.usage_chunk(
+            Canonical::Chunk.build(
+              type:       :usage,
               usage:      usage,
-              request_id: raw[:request_id] || ''
+              request_id: raw[:request_id] || '',
+              metadata:   model ? { model: } : {}
             )
           end
 
@@ -617,11 +633,11 @@ module Legion
           end
 
           def extract_tc_from_data(data)
-            Canonical::ToolCall.build(
+            {
               id:        data[:id] || data['id'],
               name:      data[:name] || data['name'],
-              arguments: data[:arguments] || data['arguments'] || {}
-            )
+              arguments: data[:arguments] || data['arguments'] || ''
+            }
           end
 
           # --- stop_reason mapping ---

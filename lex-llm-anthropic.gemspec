@@ -27,5 +27,8 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'legion-logging', '>= 1.3.2'
   spec.add_dependency 'legion-settings', '>= 1.4.2'
   spec.add_dependency 'legion-transport', '>= 1.4.14'
-  spec.add_dependency 'lex-llm', '>= 0.7.6'
+  # 0.8.0 is the complete contract cut: Canonical is the only internal language,
+  # the legacy type set and the LegacyCoordinatorAdapter wiring are deleted, and
+  # the provider funnel enforces canonical messages centrally.
+  spec.add_dependency 'lex-llm', '>= 0.8.0'
 end
