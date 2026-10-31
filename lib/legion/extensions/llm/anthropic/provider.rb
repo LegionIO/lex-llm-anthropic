@@ -159,27 +159,22 @@ module Legion
           # One canonical block to one Anthropic wire block; nil when the block
           # renders nothing (an empty text block would 400 on the API).
           def content_block_to_wire(block, cache: false)
-            case block.type
-            when :text
-              return nil if block.text.to_s.empty?
+            wire = case block.type
+                   when :text
+                     return nil if block.text.to_s.empty?
 
-              text_block(block.text, cache:)
-            when :thinking
-              thinking_block(block)
-            when :image
-              {
-                type:   'image',
-                source: {
-                  type:       block.source_type || 'base64',
-                  media_type: block.media_type,
-                  data:       block.data
-                }
-              }
-            else
-              raise ArgumentError,
-                    "anthropic provider cannot render content block type #{block.type.inspect} — " \
-                    'only text, thinking, and image blocks cross this wire'
-            end
+                     text_block(block.text, cache:)
+                   when :thinking
+                     thinking_block(block)
+                   when :image
+                     translator.render_image_block(block:)
+                   else
+                     raise ArgumentError,
+                           "anthropic provider cannot render content block type #{block.type.inspect} — " \
+                           'only text, thinking, and image blocks cross this wire'
+                   end
+            wire[:cache_control] = block.cache_control if block.cache_control
+            wire
           end
 
           def text_block(text, cache: false)

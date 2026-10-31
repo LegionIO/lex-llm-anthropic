@@ -91,6 +91,19 @@ module Legion
             base.compact
           end
 
+          # Shared by the callable render path and standalone request translation.
+          def render_image_block(block:)
+            source = case block.source_type
+                     when :url
+                       { type: 'url', url: block.data }
+                     when :base64
+                       { type: 'base64', media_type: block.media_type, data: block.data }
+                     else
+                       raise ArgumentError, "unsupported Anthropic image source type #{block.source_type.inspect}"
+                     end
+            { type: 'image', source: source }
+          end
+
           # Parse: Anthropic wire Hash to Canonical::Response. Accepts both Anthropic wire format
           # (content: array of blocks) and canonical form (text: string) for conformance kit compatibility.
           def parse_response(wire)
@@ -269,8 +282,7 @@ module Legion
                      { type: 'tool_result', tool_use_id: block.tool_use_id,
                        content: [{ type: 'text', text: block.text || '' }] }
                    when :image
-                     { type: 'image', source: { type: block.source_type || 'base64',
-                                                media_type: block.media_type, data: block.data } }
+                     render_image_block(block:)
                    else
                      { type: 'text', text: block.text || '' }
                    end

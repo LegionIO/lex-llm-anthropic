@@ -30,5 +30,5 @@ Gem::Specification.new do |spec|
   # 0.8.0 is the complete contract cut: Canonical is the only internal language,
   # the legacy type set and the LegacyCoordinatorAdapter wiring are deleted, and
   # the provider funnel enforces canonical messages centrally.
-  spec.add_dependency 'lex-llm', '>= 0.8.0'
+  spec.add_dependency 'lex-llm', '>= 0.8.6'
 end
