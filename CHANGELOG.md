@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.8] - 2026-10-31
+
+### Fixed
+- Render URL images with `source.url` and base64 images with `source.data` through one translator-owned image mapping used by both callable and standalone translation.
+- Preserve explicit text/image cache-control metadata, including TTL, in chat and streaming requests.
+
+### Changed
+- Require `lex-llm >= 0.8.6` for canonical image source normalization.
+
 ## [0.3.7] - 2026-08-25
 
 ### Fixed

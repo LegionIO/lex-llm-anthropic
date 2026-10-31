@@ -1061,6 +1061,64 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
       expect(rendered_payload[:messages]).to eq([{ role: 'user', content: [{ type: 'text', text: 'hello' }] }])
     end
 
+    it 'preserves rehydrated mixed media and cache controls on sync and streaming wire requests' do
+      canonical = Legion::Extensions::Llm::Canonical
+      cache_control = { type: 'ephemeral', ttl: '1h' }
+      original = canonical::Message.build(
+        role:    :user,
+        content: [
+          canonical::ContentBlock.text('compare these', cache_control: cache_control),
+          canonical::ContentBlock.build(type: :image, source_type: :base64, data: 'AAECAw==',
+                                        media_type: 'image/png', cache_control: cache_control),
+          canonical::ContentBlock.text('with this URL'),
+          canonical::ContentBlock.build(type: :image, source_type: :url,
+                                        data: 'https://example.test/image.png?size=2',
+                                        cache_control: { type: 'ephemeral' })
+        ]
+      )
+      messages = [canonical::Message.from_hash(Legion::JSON.load(Legion::JSON.dump(original.to_h)))]
+      captured = []
+      allow_any_instance_of(Legion::Extensions::Llm::Connection)
+        .to receive(:post) do |_connection, path, payload, &block|
+          captured << { path: path, payload: payload }
+          request = Struct.new(:options, :headers).new(Faraday::RequestOptions.new, {})
+          block&.call(request)
+          if request.options.on_data
+            event = { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'seen' } }
+            request.options.on_data.call("data: #{Legion::JSON.dump(event)}\n\n", 0, nil)
+          end
+          env = Faraday::Env.new
+          env.status = 200
+          env.response = { headers: {} }
+          env.body = AnthropicSsotHarness::MESSAGES_RESPONSE_BODY.dup
+          Faraday::Response.new(env)
+        end
+
+      sync = callable.chat(messages, model: 'claude-sonnet-4-6')
+      chunks = []
+      streamed = callable.stream_chat(messages, model: 'claude-sonnet-4-6') { |chunk| chunks << chunk }
+
+      expected_content = [
+        { type: 'text', text: 'compare these', cache_control: cache_control },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAECAw==' },
+          cache_control: cache_control },
+        { type: 'text', text: 'with this URL' },
+        { type: 'image', source: { type: 'url', url: 'https://example.test/image.png?size=2' },
+          cache_control: { type: 'ephemeral' } }
+      ]
+      translated = Legion::Extensions::Llm::Anthropic::Translator.new.render_request(
+        canonical::Request.build(messages: messages)
+      )
+      expect(translated[:messages]).to eq([{ role: 'user', content: expected_content }])
+      expect(captured.map { |entry| entry[:path] }).to eq(['/v1/messages', '/v1/messages'])
+      expect(captured.map { |entry| entry.dig(:payload, :stream) }).to eq([false, true])
+      expect(captured.map { |entry| entry.dig(:payload, :messages) })
+        .to eq(Array.new(2) { [{ role: 'user', content: expected_content }] })
+      expect(sync).to be_a(canonical::Response)
+      expect(streamed.text).to eq('seen')
+      expect(chunks.last.type).to eq(:done)
+    end
+
     it 'truncates reason to 512 bytes' do
       long_message = 'x' * 1000
       error = RuntimeError.new(long_message)
