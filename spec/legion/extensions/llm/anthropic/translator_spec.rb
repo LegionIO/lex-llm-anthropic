@@ -109,14 +109,23 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Translator do
         expect(wire[:system]).to be_nil
       end
 
-      it 'passes through cache_control: nil for system Hash already carrying cache_control' do
+      it 'preserves explicit cache control and its breakpoint on canonical system content blocks' do
         t = described_class.new(prompt_caching: { enabled: true, min_tokens: 1024 })
+        cache_control = { type: 'ephemeral', ttl: '1h' }
         req = canonical::Request.build(
-          system:   { content: long_system, cache_control: { type: 'ephemeral' } },
-          messages: [canonical::Message.build(role: :user, content: 'hi')]
+          messages: [
+            canonical::Message.build(role: :system, content: [
+                                       canonical::ContentBlock.text(long_system, cache_control:),
+                                       canonical::ContentBlock.text('Uncached instructions')
+                                     ]),
+            canonical::Message.build(role: :user, content: 'hi')
+          ]
         )
         wire = t.render_request(req)
-        expect(wire[:system]).to eq({ content: long_system, cache_control: { type: 'ephemeral' } })
+        expect(wire[:system]).to eq([
+                                      { type: 'text', text: long_system, cache_control: },
+                                      { type: 'text', text: 'Uncached instructions' }
+                                    ])
       end
     end
   end
