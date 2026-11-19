@@ -4,10 +4,10 @@ source 'https://rubygems.org'
 
 gemspec
 
-# Local-tree resolution: use the adjacent lex-llm checkout when present so the
-# 0.8.0 conformance work resolves against the local contract cut.
+# Use immutable CI companions or adjacent development checkouts when available.
 group :test do
-  lex_llm_path = File.expand_path('../lex-llm', __dir__)
+  lex_llm_path = File.expand_path('.ci-dependencies/lex-llm', __dir__)
+  lex_llm_path = File.expand_path('../lex-llm', __dir__) unless Dir.exist?(lex_llm_path)
   gem 'lex-llm', path: lex_llm_path if Dir.exist?(lex_llm_path)
 end
 

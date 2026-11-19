@@ -7,11 +7,16 @@ This gem provides the `:anthropic` provider family for LegionIO's LLM routing la
 **Namespace:** `Legion::Extensions::Llm::Anthropic`
 **Provider family:** `:anthropic`
 **Default model:** `claude-sonnet-4-6`
-**Dependency:** `lex-llm >= 0.4.3` (shared provider contracts, response normalization, fleet responders)
+**Dependency:** `lex-llm >= 0.8.6` (shared Canonical, Inventory and exact fleet contracts)
 
 ```ruby
 require 'legion/extensions/llm/anthropic'
 ```
+
+Canonical URL images render as `source: { type: 'url', url: ... }`; base64 images
+render as `source: { type: 'base64', media_type: ..., data: ... }`. The callable and
+standalone translator share this mapping. Ordered text/image content and explicit
+cache-control metadata, including TTL, survive chat, streaming and fleet rehydration.
 
 ---
 

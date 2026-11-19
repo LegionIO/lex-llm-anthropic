@@ -10,3 +10,4 @@ Gemfile.lock
 .claude
 AGENTS.md
 CLAUDE.md
+/.ci-dependencies/
