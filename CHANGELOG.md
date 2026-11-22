@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.9] - 2026-11-22
+
+### Fixed
+- Bound automatic prompt-cache placement through one Anthropic-owned policy shared by callable and standalone rendering. The callable marks only the last tool, last eligible system block, and last eligible block in the stable message prefix, respecting the configured excluded tail and the API's four-breakpoint limit.
+- Preserve explicit caller cache controls and TTLs without adding competing automatic markers. Caller-supplied invalid marker counts remain unchanged for API validation; they are not silently truncated. Automatic placement never marks thinking blocks or nested tool-result content.
+- Preserve explicit controls on canonical content blocks, message boundaries, and tool-definition metadata. A message-level hint applies to the last eligible native block without overwriting a more specific block control; tool-result hints apply to the outer result. Keep standalone caching defaults in `default_settings` and merge partial overrides through the shared configuration utility.
+
 ## [0.3.8] - 2026-10-31
 
 ### Fixed

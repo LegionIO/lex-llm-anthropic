@@ -6,6 +6,7 @@ gemspec
 
 # Use immutable CI companions or adjacent development checkouts when available.
 group :test do
+  gem 'legionio'
   lex_llm_path = File.expand_path('.ci-dependencies/lex-llm', __dir__)
   lex_llm_path = File.expand_path('../lex-llm', __dir__) unless Dir.exist?(lex_llm_path)
   gem 'lex-llm', path: lex_llm_path if Dir.exist?(lex_llm_path)

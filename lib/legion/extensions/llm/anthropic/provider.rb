@@ -2,6 +2,7 @@
 
 require 'legion/extensions/llm'
 require 'legion/logging/helper'
+require 'legion/extensions/llm/anthropic/prompt_caching'
 
 module Legion
   module Extensions
@@ -81,18 +82,21 @@ module Legion
             exclude_count = caching ? [cache_control_prefix_tokens, 1].max : 0
             cacheable_count = caching ? [chat_messages.size - exclude_count, 0].max : 0
 
-            {
+            payload = {
               model:         model.to_s,
-              messages:      format_messages(chat_messages, cacheable_count:),
+              messages:      format_messages(chat_messages),
               stream:        stream,
               max_tokens:    default_max_tokens,
-              system:        system_content(system_messages, cache: caching),
+              system:        system_content(system_messages),
               thinking:      thinking_payload(thinking),
               temperature:   params&.temperature,
-              tools:         format_tools(tools, cache: caching),
+              tools:         format_tools(tools),
               tool_choice:   tool_choice(tool_prefs),
               output_config: output_config(schema)
             }.compact
+            Legion::Extensions::Llm::Anthropic::PromptCaching.apply(
+              payload: payload, cache_tools: caching, cache_system: caching, message_prefix_count: cacheable_count
+            )
           end
 
           # The Messages API requires max_tokens on every request. /v1/models
@@ -110,26 +114,28 @@ module Legion
             end
           end
 
-          def system_content(messages, cache: false)
+          def system_content(messages)
             content = messages.flat_map do |message|
-              content_blocks(message.content, cache:)
+              Legion::Extensions::Llm::Anthropic::PromptCaching.project_message_control(
+                blocks: content_blocks(message.content), control: message.cache_control
+              )
             end
             content.empty? ? nil : content
           end
 
-          def format_messages(messages, cacheable_count: 0)
-            messages.each_with_index.map do |message, index|
-              cache = index < cacheable_count
-              if message_tool_call?(message)
-                format_tool_call_message(message, cache:)
-              elsif message_tool_result?(message)
-                format_tool_result_message(message, cache:)
-              else
-                {
-                  role:    anthropic_role(message.role),
-                  content: content_blocks(message.content, cache:)
-                }
-              end
+          def format_messages(messages)
+            messages.map do |message|
+              wire = if message_tool_call?(message)
+                       format_tool_call_message(message)
+                     elsif message_tool_result?(message)
+                       format_tool_result_message(message)
+                     else
+                       { role: anthropic_role(message.role), content: content_blocks(message.content) }
+                     end
+              Legion::Extensions::Llm::Anthropic::PromptCaching.project_message_control(
+                blocks: wire[:content], control: message.cache_control
+              )
+              wire
             end
           end
 
@@ -141,29 +147,29 @@ module Legion
           # Array<ContentBlock> | nil. Thinking is a content block on the
           # canonical message — it maps through the same path, with the
           # signature (provider dialect) read from the block metadata.
-          def content_blocks(content, cache: false)
+          def content_blocks(content)
             case content
             when nil then []
             when String
               return [] if content.empty?
 
-              [text_block(content, cache:)]
+              [text_block(content)]
             when Legion::Extensions::Llm::Canonical::ContentBlock
-              wire = content_block_to_wire(content, cache:)
+              wire = content_block_to_wire(content)
               wire ? [wire] : []
             when Array
-              content.filter_map { |block| content_block_to_wire(block, cache:) }
+              content.filter_map { |block| content_block_to_wire(block) }
             end
           end
 
           # One canonical block to one Anthropic wire block; nil when the block
           # renders nothing (an empty text block would 400 on the API).
-          def content_block_to_wire(block, cache: false)
+          def content_block_to_wire(block)
             wire = case block.type
                    when :text
                      return nil if block.text.to_s.empty?
 
-                     text_block(block.text, cache:)
+                     text_block(block.text)
                    when :thinking
                      thinking_block(block)
                    when :image
@@ -177,10 +183,8 @@ module Legion
             wire
           end
 
-          def text_block(text, cache: false)
-            { type: 'text', text: text }.tap do |block|
-              block[:cache_control] = { type: 'ephemeral' } if cache
-            end
+          def text_block(text)
+            { type: 'text', text: text }
           end
 
           def thinking_block(block)
@@ -198,36 +202,32 @@ module Legion
             !message.tool_call_id.nil? && !message.tool_call_id.to_s.empty?
           end
 
-          def format_tool_call_message(message, cache:)
-            blocks = content_blocks(message.content, cache:)
+          def format_tool_call_message(message)
+            blocks = content_blocks(message.content)
             # Canonical::Message#tool_calls is Array<Canonical::ToolCall> —
             # the name-keyed Hash shape is gone (04 L2).
-            Array(message.tool_calls).each { |tool_call| blocks << tool_use_block(tool_call, cache:) }
+            Array(message.tool_calls).each { |tool_call| blocks << tool_use_block(tool_call) }
             { role: 'assistant', content: blocks }
           end
 
-          def tool_use_block(tool_call, cache: false)
+          def tool_use_block(tool_call)
             {
-              type:          'tool_use',
-              id:            tool_call.id,
-              name:          tool_call.name,
-              input:         tool_call.arguments,
-              cache_control: { type: 'ephemeral' }
-            }.tap do |block|
-              block.delete(:cache_control) unless cache
-            end
+              type:  'tool_use',
+              id:    tool_call.id,
+              name:  tool_call.name,
+              input: tool_call.arguments
+            }
           end
 
-          def format_tool_result_message(message, cache: false)
+          def format_tool_result_message(message)
             {
               role:    'user',
               content: [
                 {
-                  type:          'tool_result',
-                  tool_use_id:   message.tool_call_id,
-                  content:       content_blocks(message.content, cache:),
-                  cache_control: { type: 'ephemeral' }
-                }.tap { |block| block.delete(:cache_control) unless cache }
+                  type:        'tool_result',
+                  tool_use_id: message.tool_call_id,
+                  content:     content_blocks(message.content)
+                }
               ]
             }
           end
@@ -241,30 +241,10 @@ module Legion
             { type: 'enabled', budget_tokens: thinking.resolved_budget }
           end
 
-          def format_tools(tools, cache: false)
+          def format_tools(tools)
             return nil if tools.empty?
 
-            tool_array = tools.values.map do |tool|
-              # Tools can be ToolDefinition objects or plain Hashes from native_dispatch.
-              tool_name = tool.respond_to?(:name) ? tool.name : (tool[:name] || tool['name'])
-              tool_desc = tool.respond_to?(:description) ? tool.description : (tool[:description] || tool['description'] || '')
-              {
-                name:         tool_name,
-                description:  tool_desc,
-                input_schema: tool_schema(tool)
-              }
-            end
-
-            tool_array.last[:cache_control] = { type: 'ephemeral' } if cache && tool_array.any?
-
-            tool_array
-          end
-
-          def tool_schema(tool)
-            return tool.params_schema if tool.respond_to?(:params_schema) && tool.params_schema
-
-            raw = tool.respond_to?(:parameters) ? tool.parameters : (tool[:parameters] || tool['parameters'])
-            Legion::Extensions::Llm::Canonical::ToolDefinition.normalize_parameters(raw)
+            tools.values.map { |tool| translator.render_tool(tool: tool) }
           end
 
           def tool_choice(tool_prefs)
