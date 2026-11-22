@@ -4,21 +4,6 @@ require 'spec_helper'
 require 'legion/extensions/llm/fleet/provider_responder'
 require 'legion/extensions/llm/anthropic/runners/fleet_worker'
 
-# The fleet worker actor subclasses LegionIO's Subscription base, which only
-# exists inside a LegionIO host. Stub it before the actor file loads (the
-# actor file raises LoadError without the runtime).
-module Legion
-  module Extensions
-    module Actors
-      unless const_defined?(:Subscription, false)
-        class Subscription
-          def initialize(*) = true
-        end
-      end
-    end
-  end
-end
-
 require 'legion/extensions/llm/anthropic/actors/fleet_worker'
 
 RSpec.describe Legion::Extensions::Llm::Anthropic::Runners::FleetWorker do
@@ -53,7 +38,8 @@ RSpec.describe Legion::Extensions::Llm::Anthropic::Runners::FleetWorker do
   end
 
   context 'Subscription actor dispatch (D13)' do
-    let(:actor) { Legion::Extensions::Llm::Anthropic::Actor::FleetWorker.new }
+    # Exercise the real dispatch methods without opening a subscription.
+    let(:actor) { Legion::Extensions::Llm::Anthropic::Actor::FleetWorker.allocate }
 
     it 'dispatches runner_class.send(runner_function, **message) without error' do
       expect(Legion::Extensions::Llm::Fleet::ProviderResponder).to receive(:call).and_return(:dispatched)

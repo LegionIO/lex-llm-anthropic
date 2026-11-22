@@ -133,7 +133,7 @@ RSpec.describe Legion::Extensions::Llm::Anthropic do
   end
 
   def tool(name, description, params_schema)
-    Struct.new(:name, :description, :params_schema).new(name, description, params_schema)
+    Legion::Extensions::Llm::Canonical::ToolDefinition.build(name: name, description: description, parameters: params_schema)
   end
 
   def completion_body

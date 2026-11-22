@@ -2,22 +2,11 @@
 
 require 'spec_helper'
 
-module Legion
-  module Extensions
-    module Actors
-      unless const_defined?(:Subscription, false)
-        class Subscription
-          def initialize(*) = true
-        end
-      end
-    end
-  end
-end
-
 require 'legion/extensions/llm/anthropic/actors/fleet_worker'
 
 RSpec.describe Legion::Extensions::Llm::Anthropic::Actor::FleetWorker do
-  subject(:actor) { described_class.new }
+  # These examples inspect dispatch methods, not subscription startup.
+  subject(:actor) { described_class.allocate }
 
   it 'uses the provider-owned fleet runner as a resolvable module constant' do
     # The Subscription dispatch path (use_runner? = false) calls

@@ -2,6 +2,7 @@
 
 require 'legion/logging/helper'
 require 'legion/extensions/llm/canonical'
+require 'legion/extensions/llm/anthropic/prompt_caching'
 
 module Legion
   module Extensions
@@ -47,7 +48,7 @@ module Legion
 
           def initialize(config = {})
             instance_defaults = Legion::Extensions::Llm::Anthropic.default_settings[:instances][:default]
-            @config = instance_defaults.merge(config.to_h)
+            @config = Legion::Extensions::Llm::Utils.deep_merge(instance_defaults, config.to_h)
           end
 
           # Render: Canonical::Request to Anthropic wire Hash.
@@ -60,7 +61,6 @@ module Legion
                            else
                              render_system_content(system_messages)
                            end
-            inject_prompt_cache_control!(system_parts, canonical_request.system)
             message_parts = render_messages(chat_messages, thinking: thinking_enabled?(canonical_request))
             tools = render_tools(canonical_request.tools)
             tool_choice = render_tool_choice(canonical_request.tool_choice)
@@ -88,7 +88,10 @@ module Legion
             base[:tool_choice] = tool_choice if tool_choice
             base[:max_tokens] ||= canonical_request.metadata&.dig(:default_max_tokens) || settings_default_max_tokens
 
-            base.compact
+            Legion::Extensions::Llm::Anthropic::PromptCaching.apply(
+              payload: base.compact, cache_tools: false,
+              cache_system: cache_system?(raw_system: canonical_request.system), message_prefix_count: 0
+            )
           end
 
           # Shared by the callable render path and standalone request translation.
@@ -102,6 +105,13 @@ module Legion
                        raise ArgumentError, "unsupported Anthropic image source type #{block.source_type.inspect}"
                      end
             { type: 'image', source: source }
+          end
+
+          # Canonical tool definitions share one wire projection, including the
+          # explicit cache control folded into their metadata at construction.
+          def render_tool(tool:)
+            wire = { name: tool.name, description: tool.description, input_schema: tool.parameters }
+            Legion::Extensions::Llm::Anthropic::PromptCaching.project_control(block: wire, control: tool.metadata[:cache_control])
           end
 
           # Parse: Anthropic wire Hash to Canonical::Response. Accepts both Anthropic wire format
@@ -211,17 +221,16 @@ module Legion
 
           def render_messages(messages, thinking:)
             messages.map do |msg|
-              case msg.role
-              when :assistant
-                render_assistant_message(msg, thinking:)
-              when :tool
-                render_tool_result_message(msg)
-              else
-                {
-                  role:    msg.role.to_s,
-                  content: render_content_blocks(msg.content)
-                }
-              end
+              wire = case msg.role
+                     when :assistant
+                       render_assistant_message(msg, thinking:)
+                     when :tool
+                       render_tool_result_message(msg)
+                     else
+                       { role: msg.role.to_s, content: render_content_blocks(msg.content) }
+                     end
+              Legion::Extensions::Llm::Anthropic::PromptCaching.project_message_control(blocks: wire[:content], control: msg.cache_control)
+              wire
             end
           end
 
@@ -327,13 +336,14 @@ module Legion
           def render_system_content(messages)
             parts = messages.flat_map do |msg|
               content = msg.content
-              if content.is_a?(Canonical::ContentBlock) && content.type == :text
-                [{ type: 'text', text: content.text || '' }]
-              elsif content.is_a?(Array)
-                render_content_blocks(content)
-              else
-                [{ type: 'text', text: content.to_s }]
-              end
+              blocks = if content.is_a?(Canonical::ContentBlock) && content.type == :text
+                         [content_block_to_wire(content)]
+                       elsif content.is_a?(Array)
+                         render_content_blocks(content)
+                       else
+                         [{ type: 'text', text: content.to_s }]
+                       end
+              Legion::Extensions::Llm::Anthropic::PromptCaching.project_message_control(blocks: blocks, control: msg.cache_control)
             end
             parts.empty? ? nil : parts
           end
@@ -343,17 +353,7 @@ module Legion
           def render_tools(tools)
             return nil if tools.nil? || tools.empty?
 
-            tools.values.map do |tool|
-              name = tool.is_a?(Canonical::ToolDefinition) ? tool.name : (tool[:name] || tool['name'])
-              desc = tool.is_a?(Canonical::ToolDefinition) ? tool.description : (tool[:description] || tool['description'] || '')
-              params = if tool.is_a?(Canonical::ToolDefinition)
-                         tool.parameters
-                       else
-                         Canonical::ToolDefinition.normalize_parameters(tool[:parameters] || tool['parameters'])
-                       end
-
-              { name: name, description: desc, input_schema: params }
-            end
+            tools.values.map { |tool| render_tool(tool: tool) }
           end
 
           # --- tool_choice ---
@@ -674,21 +674,11 @@ module Legion
 
           # --- prompt caching ---
 
-          def inject_prompt_cache_control!(system_parts, raw_system)
-            return unless system_parts.is_a?(Array) && !system_parts.empty?
-            return unless raw_system.is_a?(String)
+          def cache_system?(raw_system:)
+            return false unless raw_system.is_a?(String)
 
             caching = prompt_caching_settings
-            return unless caching[:enabled] != false
-
-            min_tokens = caching[:min_tokens] || 1024
-            return unless raw_system.length > min_tokens
-
-            last = system_parts.last
-            return unless last.is_a?(Hash) && last[:type] == 'text'
-
-            last[:cache_control] = { type: 'ephemeral' }
-            log.debug "[llm][anthropic][translator] action=inject_cache_control length=#{raw_system.length}"
+            caching[:enabled] && raw_system.length > caching[:min_tokens]
           end
 
           def prompt_caching_settings
